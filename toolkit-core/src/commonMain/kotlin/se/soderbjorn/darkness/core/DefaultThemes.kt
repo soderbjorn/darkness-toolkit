@@ -130,6 +130,11 @@ val defaultThemes: List<Theme> = listOf(
         colorScheme = "Neon Green",
     ),
     Theme(
+        name = "Neon Lime",
+        mode = ConfigMode.Dark,
+        colorScheme = "Neon Lime",
+    ),
+    Theme(
         name = "Neon Red",
         mode = ConfigMode.Dark,
         colorScheme = "Neon Red",

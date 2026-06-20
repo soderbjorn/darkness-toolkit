@@ -3,8 +3,7 @@
  *
  * Each [ColorScheme] carries a dark-mode and light-mode foreground/background
  * colour pair. The [recommendedColorSchemes] list is the canonical palette
- * surfaced in every platform's colour-scheme picker; it is kept in sync with
- * the HTML colour-picker tool at `tools/neon-green-picker.html`.
+ * surfaced in every platform's colour-scheme picker.
  *
  * Naming: what the UI calls a "colour scheme" is represented here as
  * [ColorScheme]; what the UI calls a "theme" (a named composition of
@@ -59,8 +58,6 @@ data class ColorScheme(
  * group ("tinted-background schemes") specifies custom background colours for
  * both modes, giving the picker visual variety (cream Solarized Light, deep
  * navy Tokyo Night, etc.).
- *
- * Kept in sync with the "Recommended" tab in `tools/neon-green-picker.html`.
  */
 // ── Syntax override maps for designer themes ──────────────────────────
 
@@ -536,6 +533,14 @@ val recommendedColorSchemes: List<ColorScheme> = listOf(
     ColorScheme("Mint terminal", "#33ff99", "#0b8a5b"),
     ColorScheme("Cyber teal",    "#00e5ff", "#006d80"),
     ColorScheme("Neon Green",    "#00ff9f", "#00795c", overrides = neonGreenOverrides),
+
+    // Sibling of Neon Green using the softer mint-green foreground from the
+    // marketing site's body text (target #82da96 — cooler than Neon Green's
+    // teal, blue over red). Seed is pre-shifted cooler (#6ddc8f) to cancel the
+    // app's sub-pixel-AA warm fringe (~+21R/+7B vs the browser), so thin glyph
+    // strokes land on the site's green on screen. Shares Neon Green's
+    // hand-tuned syntax overrides and pure-black bg.
+    ColorScheme("Neon Lime",     "#6ddc8f", "#2e7d4a", overrides = neonGreenOverrides),
 
     // ── Neon family ───────────────────────────────────────────────────
     // Same monochrome shape as Neon Green for the other primary hues. Each
