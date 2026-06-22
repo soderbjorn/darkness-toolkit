@@ -99,6 +99,14 @@ interface ThemeManagerHost {
      *  size. */
     val tabbarFontSizePx: Int? get() = null
 
+    /** Pane-title (pane header) font family, or `null` to fall back to the
+     *  sidebar font. */
+    val paneHeaderFontFamily: String? get() = null
+
+    /** Pane-title (pane header) font size in px, or `null` to fall back to
+     *  the sidebar size. */
+    val paneHeaderFontSizePx: Int? get() = null
+
     /** Whether the host has opted in to OS desktop notifications. */
     val desktopNotifications: Boolean get() = false
 
@@ -130,6 +138,12 @@ interface ThemeManagerHost {
 
     /** Persist a new tabbar-font-size preference. `null` clears it. */
     fun setTabbarFontSizePx(value: Int?) {}
+
+    /** Persist a new pane-title-font-family preference. `null` clears it. */
+    fun setPaneHeaderFontFamily(value: String?) {}
+
+    /** Persist a new pane-title-font-size preference. `null` clears it. */
+    fun setPaneHeaderFontSizePx(value: Int?) {}
 
     /** Persist the desktop-notifications toggle. */
     fun setDesktopNotifications(value: Boolean) {}

@@ -149,9 +149,9 @@ fun applyTheme(element: HTMLElement, theme: ResolvedTheme, isDark: Boolean) {
 
 // ── Per-category font CSS variables ─────────────────────────────────
 //
-// Each font category (mono / proportional / sidebar / tabbar) has a
-// pair of `--dt-font-*` variables on `documentElement` that app
-// stylesheets reference directly:
+// Each font category (mono / proportional / sidebar / tabbar /
+// pane-header) has a pair of `--dt-font-*` variables on `documentElement`
+// that app stylesheets reference directly:
 //
 //     .dt-pane-terminal     { font-family: var(--dt-font-mono);
 //                              font-size:   var(--dt-font-mono-size); }
@@ -161,6 +161,8 @@ fun applyTheme(element: HTMLElement, theme: ResolvedTheme, isDark: Boolean) {
 //                              font-size:   var(--dt-font-sidebar-size, inherit); }
 //     .dt-tabbar            { font-family: var(--dt-font-tabbar, var(--dt-font-sidebar, inherit));
 //                              font-size:   var(--dt-font-tabbar-size, var(--dt-font-sidebar-size, inherit)); }
+//     .dt-pane-title        { font-family: var(--dt-font-pane-header, inherit);
+//                              font-size:   var(--dt-font-pane-header-size, var(--dt-pane-title-size, 11px)); }
 //
 // Helpers below resolve preset keys to CSS stacks via [resolveFontFamilyCss] /
 // [resolveProportionalFontFamilyCss], then write the resulting value (or
@@ -246,4 +248,23 @@ fun applyTabbarFontFamily(key: String?) {
 /** Apply [px] as the tab-strip font size. */
 fun applyTabbarFontSizePx(px: Int?) {
     setOrClearVar("--dt-font-tabbar-size", px?.let { "${it}px" })
+}
+
+/**
+ * Apply [key] as the pane-title (pane header) font. Falls through the same
+ * resolution as [applySidebarFontFamily] so any preset kind is accepted.
+ */
+fun applyPaneHeaderFontFamily(key: String?) {
+    if (key.isNullOrEmpty()) {
+        setOrClearVar("--dt-font-pane-header", null)
+        return
+    }
+    val css = fontPresets.firstOrNull { it.key == key }?.cssStack
+        ?: resolveProportionalFontFamilyCss(key)
+    setOrClearVar("--dt-font-pane-header", css)
+}
+
+/** Apply [px] as the pane-title (pane header) font size. */
+fun applyPaneHeaderFontSizePx(px: Int?) {
+    setOrClearVar("--dt-font-pane-header-size", px?.let { "${it}px" })
 }

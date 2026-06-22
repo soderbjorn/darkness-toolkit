@@ -39,6 +39,8 @@ import se.soderbjorn.darkness.web.applySidebarFontFamily
 import se.soderbjorn.darkness.web.applySidebarFontSizePx
 import se.soderbjorn.darkness.web.applyTabbarFontFamily
 import se.soderbjorn.darkness.web.applyTabbarFontSizePx
+import se.soderbjorn.darkness.web.applyPaneHeaderFontFamily
+import se.soderbjorn.darkness.web.applyPaneHeaderFontSizePx
 import se.soderbjorn.darkness.web.setDtCustomTitleBarBodyClass
 import se.soderbjorn.darkness.web.settings.AppSettingsSidebarSpec
 import se.soderbjorn.darkness.web.settings.SettingsSidebarSpec
@@ -794,6 +796,8 @@ private class ShellState(
         applySidebarFontSizePx(host.sidebarFontSizePx)
         applyTabbarFontFamily(host.tabbarFontFamily)
         applyTabbarFontSizePx(host.tabbarFontSizePx)
+        applyPaneHeaderFontFamily(host.paneHeaderFontFamily)
+        applyPaneHeaderFontSizePx(host.paneHeaderFontSizePx)
     }
 
     /** Last value pushed to the Electron main process; lets us skip

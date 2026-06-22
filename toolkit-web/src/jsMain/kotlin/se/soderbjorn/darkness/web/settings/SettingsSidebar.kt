@@ -44,6 +44,8 @@ import se.soderbjorn.darkness.web.applySidebarFontFamily
 import se.soderbjorn.darkness.web.applySidebarFontSizePx
 import se.soderbjorn.darkness.web.applyTabbarFontFamily
 import se.soderbjorn.darkness.web.applyTabbarFontSizePx
+import se.soderbjorn.darkness.web.applyPaneHeaderFontFamily
+import se.soderbjorn.darkness.web.applyPaneHeaderFontSizePx
 import se.soderbjorn.darkness.web.shell.SidebarSpec
 import se.soderbjorn.darkness.web.shell.renderRightSidebar
 import se.soderbjorn.darkness.web.themeeditor.FontKind
@@ -343,6 +345,29 @@ private fun renderSettingsBody(target: HTMLElement, spec: SettingsSidebarSpec) {
         onPick = { px ->
             spec.host.setTabbarFontSizePx(px)
             applyTabbarFontSizePx(px)
+        },
+    ))
+
+    // ── Window title font ───────────────────────────────────────────
+    body.appendChild(buildFontFaceSection(
+        title = "Window title font",
+        hint = "Used by each window's title bar (falls back to Sidebar when unset).",
+        kind = FontKind.Proportional,
+        showKinds = setOf(FontKind.Proportional, FontKind.Mono),
+        currentKey = { spec.host.paneHeaderFontFamily },
+        onPick = { key ->
+            spec.host.setPaneHeaderFontFamily(key)
+            applyPaneHeaderFontFamily(key)
+        },
+    ))
+    body.appendChild(buildFontSizeSection(
+        title = "Window title size",
+        sizes = spec.sidebarSizePresets,
+        defaultSize = spec.sidebarSizeDefault,
+        currentSize = { spec.host.paneHeaderFontSizePx },
+        onPick = { px ->
+            spec.host.setPaneHeaderFontSizePx(px)
+            applyPaneHeaderFontSizePx(px)
         },
     ))
 

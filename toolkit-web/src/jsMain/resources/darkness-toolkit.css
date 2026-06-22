@@ -1562,6 +1562,11 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .dt-topbar {
     flex: 0 1 auto;
     min-width: 0;
     font-size: var(--dt-pane-title-size, 11px);
+    /* Per-category pane-title font (Appearance ▸ "Window title font/size").
+       Family falls back to the inherited stack; size falls through to the
+       existing `--dt-pane-title-size` (11px) when no override is set. */
+    font-family: var(--dt-font-pane-header, inherit);
+    font-size: var(--dt-font-pane-header-size, var(--dt-pane-title-size, 11px));
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.6px;
