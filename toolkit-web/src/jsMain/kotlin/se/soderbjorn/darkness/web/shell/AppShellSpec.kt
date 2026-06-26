@@ -670,6 +670,23 @@ interface AppShellHandle {
      */
     fun setThemeSnapshot(snapshot: ThemeSnapshotV2)
 
+    /**
+     * Adopts an externally-authored layout-state blob (the toolkit's
+     * `LAYOUT_STATE` persistence string) into the already-mounted shell:
+     * updates pane geometry / z-order / maximize / minimize and the per-tab
+     * preset + order, then re-renders so the change shows immediately.
+     *
+     * Use this when another client (e.g. a phone on the same server) changes
+     * the layout and the host wants this live shell to reflect it without a
+     * reload. No-op when the blob matches the current state, and it does NOT
+     * re-persist — so adopting a pushed change can't loop back through the
+     * broadcast that delivered it.
+     *
+     * @param layoutStateJson the `LAYOUT_STATE` blob string, as produced by the
+     *   toolkit's own persistence.
+     */
+    fun applyExternalLayoutState(layoutStateJson: String)
+
     /** Tears down the shell, releasing toolkit-owned resources. */
     fun dispose()
 }

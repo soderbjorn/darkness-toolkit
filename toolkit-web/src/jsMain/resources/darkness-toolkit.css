@@ -466,20 +466,39 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .dt-topbar {
     z-index: 1;
 }
 
+/* A hidden ("unlisted") tab is shown in the strip only while it is the
+   active tab (TabBar.kt). The dashed outline hints that it isn't a normal
+   listed tab and will drop back out once another tab is activated. Combines
+   with `.dt-selected` (the active ring) since it is always active here. */
+.dt-tab.dt-tab-unlisted {
+    border-style: dashed;
+}
+
 /* ── Tab-bar overflow `⋮` menu (TabBarOverflowMenu.kt) ────── */
 /* Ported from termtastic .tab-bar-menu*. The button lives inline in the
    bar; the dropdown list is mounted on document.body so the bar's
    horizontal scroll doesn't clip it. */
+/* Transparent dismissal backdrop for the tab menus. Mounted on document.body
+   beneath the open dropdown (z-index 1000) but above everything else, and
+   marked no-drag so it catches presses even over the Electron titlebar drag
+   region — where a plain click listener would never fire. See
+   TabBarOverflowMenu.kt#wireMenuToggle. */
+.dt-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 999;
+    background: transparent;
+    -webkit-app-region: no-drag;
+}
+/* The unlisted-tabs `⋮` lives at the END of the tab strip (appended into
+   `.dt-tabbar-strip`), so it reads as part of the tab bar — spaced from the
+   last tab by the strip's own column-gap rather than floating off to the
+   right. */
 .dt-tabbar-menu {
     position: relative;
     display: inline-flex;
     align-items: center;
-    /* Top-align the `⋮` button so it tracks the first row of tabs when the
-       strip wraps. Previously `flex-end` pinned it to the last row,
-       leaving it visually adrift from the trailing icon cluster. */
-    align-self: flex-start;
     flex-shrink: 0;
-    margin: 0 0 -1px 4px;
 }
 .dt-tabbar-menu-button {
     appearance: none;
@@ -491,7 +510,7 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .dt-topbar {
     line-height: 1;
     cursor: pointer;
     padding: 4px 10px;
-    border-radius: 6px 6px 0 0;
+    border-radius: 6px;
     letter-spacing: 1px;
     transition: color 120ms ease-in-out, background-color 120ms ease-in-out;
 }
@@ -586,6 +605,82 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .dt-topbar {
     color: var(--t-accent, #ff8a3d);
     font-weight: 700;
     box-shadow: inset 0 0 0 2px var(--t-accent, #ff8a3d);
+}
+/* Trailing action button inside a menu row (e.g. the overflow menu's
+   "Show in tab bar" un-hide affordance on each Unlisted-tab row). Sits
+   after the flex:1 label, so it pins to the row's right edge. */
+.dt-tabbar-menu-item-action {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--t-text-dim, #b8b8b8);
+    cursor: pointer;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    margin: -4px -4px -4px 4px;
+    border-radius: 4px;
+    transition: color 120ms ease-in-out, background-color 120ms ease-in-out;
+}
+.dt-tabbar-menu-item-action svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+}
+.dt-tabbar-menu-item-action:hover {
+    color: var(--t-text, #e6e6e6);
+    background: var(--t-accent-soft, rgba(255, 255, 255, 0.18));
+}
+
+/* ── Per-tab `⋯` dot menu (TabBarOverflowMenu.kt#appendTabDotMenu) ──
+   A small dots button at each tab's right corner holding that tab's own
+   actions (Rename / Close / Hide / Show). The dropdown list reuses the
+   `.dt-tabbar-menu-list*` styling above. The button stays hidden until the
+   tab is hovered (revealed on hover only — not on the active tab) so dense
+   tab strips read cleanly. */
+.dt-tab-menu {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    /* Pull the ⋮ in tight: counteract the tab's 6px child-gap on the left and
+       most of its 14px right padding so the icon hugs the label and the tab's
+       right edge instead of floating in dead space. */
+    margin-left: -4px;
+    margin-right: -9px;
+}
+.dt-tab-menu-button {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--t-text-dim, #b8b8b8);
+    font: inherit;
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+    border-radius: 4px;
+    letter-spacing: 1px;
+    opacity: 0;
+    transition: color 120ms ease-in-out, background-color 120ms ease-in-out,
+        opacity 120ms ease-in-out;
+}
+/* Reveal the ⋮ only while the tab is hovered — not on the active tab — so
+   the strip stays clean. Stays visible while its own menu is open (so it
+   doesn't vanish mid-interaction) and on keyboard focus (a11y). The button
+   keeps its box at opacity 0 the rest of the time, so revealing it never
+   shifts the layout. */
+.dt-tab:hover .dt-tab-menu-button,
+.dt-tab-menu.dt-open .dt-tab-menu-button,
+.dt-tab-menu-button:focus-visible {
+    opacity: 1;
+}
+.dt-tab-menu-button:hover,
+.dt-tab-menu.dt-open .dt-tab-menu-button {
+    color: var(--t-text, #e6e6e6);
+    background: var(--t-accent-soft, rgba(255, 255, 255, 0.12));
 }
 
 /* ── Layout-preset preview-tile dropdown ─────────────────────

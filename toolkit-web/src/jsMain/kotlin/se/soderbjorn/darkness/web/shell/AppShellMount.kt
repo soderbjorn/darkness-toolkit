@@ -149,6 +149,16 @@ internal data class PersistedPaneGeometry(
 )
 
 /**
+ * How many of this client's own recent layout writes are remembered so their
+ * server echoes can be recognised and ignored. A single geometry gesture can
+ * fan out into a handful of sequential persists (the action itself, then the
+ * post-render refit, then an Auto re-tile), so the window must be a little
+ * larger than one. 16 comfortably covers the longest such burst while staying
+ * tiny in memory.
+ */
+private const val RECENT_LAYOUT_WRITES = 16
+
+/**
  * Encodes [layout] as a JSON string via `JSON.stringify` so toolkit-web
  * doesn't take a hard dep on the kotlinx.serialization plugin.
  */
@@ -502,6 +512,10 @@ fun mountAppShell(
             state.syncThemeFromHost(snapshot)
         }
 
+        override fun applyExternalLayoutState(layoutStateJson: String) {
+            state.applyExternalLayoutState(layoutStateJson)
+        }
+
         override fun dispose() {
             initJob.cancel()
             spec.rootContainer.innerHTML = ""
@@ -594,6 +608,30 @@ private class ShellState(
      * snapshot only carries pane *identity*.
      */
     private var geometryState: PersistedLayoutState = PersistedLayoutState()
+
+    /**
+     * `true` while [applyExternalLayoutState] is adopting a layout-state blob
+     * pushed from another client. Suppresses [persistLayoutState] so adopting
+     * a remote change doesn't write it straight back out (which would loop
+     * through the broadcast that delivered it).
+     */
+    private var applyingExternal: Boolean = false
+
+    /**
+     * The most recent layout-states this client has itself written via
+     * [persistLayoutState], newest last, capped at [RECENT_LAYOUT_WRITES].
+     *
+     * Used by [applyExternalLayoutState] to recognise — and ignore — the
+     * server's echo of our *own* writes. A single geometry action often
+     * triggers several sequential persists (e.g. a maximize followed by the
+     * post-render terminal refit), so by the time the first echo arrives
+     * [geometryState] has already advanced past it. Comparing only against the
+     * live [geometryState] therefore mistakes a stale self-echo for a remote
+     * change, adopts it, refits, re-persists, and loops forever (the flicker
+     * bug). Matching against the recent-writes set instead catches the echo of
+     * any of them, so only genuinely remote blobs are adopted.
+     */
+    private val recentLayoutWrites: ArrayDeque<PersistedLayoutState> = ArrayDeque()
 
     /**
      * Per-tab [LayoutController] keyed by tab id. Lazily populated by
@@ -903,6 +941,35 @@ private class ShellState(
         s.presetByTab.forEach { (tabId, key) ->
             LayoutPreset.fromKey(key)?.let { controllerFor(tabId).setPreset(it) }
         }
+    }
+
+    /**
+     * Adopt an externally-authored `LAYOUT_STATE` blob into the live shell and
+     * re-render so the change is visible immediately. Backs
+     * [AppShellHandle.applyExternalLayoutState].
+     *
+     * No-op when the decoded state equals the current one (so a client's own
+     * change, echoed back through the server broadcast, doesn't churn). While
+     * applying, [persistLayoutState] is suppressed via [applyingExternal] so
+     * adopting a remote change never writes it back out.
+     *
+     * @param layoutStateJson the blob string as produced by [encodeLayoutStateJson].
+     */
+    fun applyExternalLayoutState(layoutStateJson: String) {
+        val parsed = decodeLayoutStateJson(layoutStateJson)
+        // Ignore the server's echo of our own writes. `geometryState` may have
+        // already advanced past the echoed blob (a single gesture fans out into
+        // several persists), so also match against the recent-writes window —
+        // otherwise a stale self-echo is mistaken for a remote change and the
+        // adopt → refit → re-persist → echo cycle never settles (flicker bug).
+        if (parsed == geometryState || recentLayoutWrites.contains(parsed)) return
+        applyingExternal = true
+        try {
+            applyPersistedLayoutState(parsed)
+        } finally {
+            applyingExternal = false
+        }
+        rerender()
     }
 
     /**
@@ -1463,10 +1530,10 @@ private class ShellState(
                 id = t.id,
                 label = t.label,
                 // No inline × close button on tabs themselves — close lives
-                // exclusively in the tab's `⋮` overflow menu (where it sits
-                // alongside Rename, New tab, Hide, etc.). One canonical
-                // place to close a tab keeps the affordance discoverable
-                // without the visual clutter of a per-tab cross.
+                // in the tab's own `⋮` dot menu (alongside Rename, Hide,
+                // etc.; see appendTabDotMenu). One canonical place to close
+                // a tab keeps the affordance discoverable without the visual
+                // clutter of a per-tab cross.
                 isClosable = false,
                 isDraggable = if (srcMode) spec.tabSource!!.onReorder != null else true,
                 isRenamable = if (srcMode) spec.tabSource!!.onRename != null else true,
@@ -1572,15 +1639,15 @@ private class ShellState(
         val tabBarSpec = TabBarSpec(
             tabs = tabs,
             activeTabId = activeId,
-            // Hide the inline `+` add button — it's redundant with the
-            // overflow menu's "New tab" entry; that's also where rename
-            // and close-tab live so users have one canonical place for
-            // tab actions.
+            // Hide the inline `+` add button — "New tab" lives in the
+            // trailing "New" (`+`) menu now (issue #65).
             showAddButton = false,
-            // The `⋮` menu next to the tabs holds: New tab, Rename,
-            // Close, Hide/Show in tab bar, Hide/Show in side bar, plus
-            // a list of currently-hidden tabs to re-activate. Toolkit
-            // owns the menu rendering.
+            // Per-tab actions (Rename, Close, Hide/Show in tab bar,
+            // Hide/Show in side bar) live in each tab's own dot menu at
+            // its right corner. The far-right `⋮` overflow menu now holds
+            // only the list of currently-hidden ("Unlisted") tabs to
+            // re-activate / un-hide, and renders only when some exist.
+            // Toolkit owns all of this rendering.
             showOverflowMenu = true,
             callbacks = callbacks,
         )
@@ -1598,7 +1665,7 @@ private class ShellState(
         )
 
         // Trailing slot order:
-        //   spec.extraTopbarBeforeStandard …  ‖  Layout · NewPane · ThemeToggle · ThemeMgr  ‖  spec.extraTopbarTrailing …
+        //   spec.extraTopbarBeforeStandard …  ‖  NewPane · Layout · ThemeToggle · ThemeMgr  ‖  spec.extraTopbarTrailing …
         // The two ‖ markers are non-interactive `dt-topbar-trailing-divider`
         // spans rendered when both flanks are non-empty, giving the
         // standard cluster a small breathing margin from app-supplied
@@ -1633,29 +1700,42 @@ private class ShellState(
                 viewActiveTabId()?.let { controllerFor(it).activePreset }
             },
         )
-        trailing.appendChild(layoutDropdown.triggerButton)
-        // If the tab source supplies secondary "new pane" actions
-        // (termtastic does: Terminal link / File Browser / Git) render
-        // the split-button variant — icon click still defaults to
-        // onPaneAdd, hover reveals the dropdown. Apps without the
-        // callback keep the historical plain-button.
+        // Trailing order: the "+" New button sits BEFORE the Layout button
+        // (appended just below), so the layout dropdown's append is deferred.
+        // The trailing "+" button is the general "New" menu (issue #65).
+        // It is always a split-button: clicking the icon adds a pane to the
+        // active tab, while the hover dropdown leads with "New tab" and then
+        // lists whatever pane flavours the host supplies via
+        // [TabSource.paneAddMenuItems] (termtastic: Terminal / Terminal link
+        // / File Browser / Git — i.e. "New terminal window", etc.). Painted
+        // with the plain-plus [ICON_NEW_TAB] glyph so it reads like the
+        // Android/iOS overview `+`, not the old window-with-`+` mark. Hosts
+        // with no pane flavours still get the plus + a "New tab" dropdown.
+        // (Per-tab actions live in each tab's own dot menu now — see
+        // TabBar.kt / TabBarOverflowMenu.kt.)
         val paneAddItemsProvider = spec.tabSource?.paneAddMenuItems
-        val newPaneButton = if (paneAddItemsProvider != null) {
-            buildNewWindowSplitButton(
-                tooltip = "New pane",
-                items = {
-                    val activeTabId = external?.activeTabId
-                    if (activeTabId == null) emptyList()
-                    else paneAddItemsProvider(activeTabId).map { item ->
+        val newPaneButton = buildNewWindowSplitButton(
+            tooltip = "New",
+            iconHtml = ICON_NEW_TAB,
+            items = {
+                // "New tab" first, then the active tab's pane flavours.
+                val newTabRow = callbacks.onAdd?.let { onAdd ->
+                    listOf(HoverMenuItem("new-tab", "New tab", ICON_NEW_TAB) { onAdd() })
+                } ?: emptyList()
+                val activeTabId = external?.activeTabId ?: viewActiveTabId()
+                val paneRows = if (paneAddItemsProvider == null || activeTabId == null) {
+                    emptyList()
+                } else {
+                    paneAddItemsProvider(activeTabId).map { item ->
                         HoverMenuItem(item.id, item.label, item.iconHtml, item.onSelect)
                     }
-                },
-                onDefaultClick = { addPaneToActiveTab() },
-            )
-        } else {
-            buildNewWindowButton(tooltip = "New pane") { addPaneToActiveTab() }
-        }
+                }
+                newTabRow + paneRows
+            },
+            onDefaultClick = { addPaneToActiveTab() },
+        )
         trailing.appendChild(newPaneButton)
+        trailing.appendChild(layoutDropdown.triggerButton)
         // Three-state cycle: Auto → Dark → Light → Auto. Helper paints
         // the per-state SVG (sun / moon / half-disc) so the icon
         // reflects the current appearance every rerender.
@@ -2407,6 +2487,7 @@ private class ShellState(
      * and on every [updateGeometry] call.
      */
     private fun persistLayoutState() {
+        if (applyingExternal) return
         val presetByTab = layoutControllers.mapValues { (_, c) -> c.activePreset.key }
         val paneOrderByTab = layoutControllers.mapValues { (_, c) -> c.paneOrder.toList() }
         val merged = geometryState.copy(
@@ -2414,6 +2495,10 @@ private class ShellState(
             paneOrderByTab = paneOrderByTab,
         )
         geometryState = merged
+        // Remember this write so [applyExternalLayoutState] can recognise (and
+        // skip) its server echo instead of re-adopting it and looping.
+        recentLayoutWrites.addLast(merged)
+        while (recentLayoutWrites.size > RECENT_LAYOUT_WRITES) recentLayoutWrites.removeFirst()
         val json = encodeLayoutStateJson(merged)
         scope.launch { spec.persister.write(PersistKeys.LAYOUT_STATE, json) }
     }

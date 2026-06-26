@@ -33,12 +33,23 @@ private const val ICON_SPLIT_PANE: String =
         "<rect x=\"2\" y=\"2.5\" width=\"12\" height=\"11\" rx=\"1.5\"/>" +
         "<line x1=\"8\" y1=\"2.5\" x2=\"8\" y2=\"13.5\"/></svg>"
 
-/** Inline SVG: a plus glyph centred in a 16×16 viewbox — universal "new" icon. */
-private const val ICON_NEW_TAB: String =
-    "<svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" " +
-        "stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\">" +
-        "<line x1=\"8\" y1=\"3\" x2=\"8\" y2=\"13\"/>" +
-        "<line x1=\"3\" y1=\"8\" x2=\"13\" y2=\"8\"/></svg>"
+/**
+ * Inline SVG: a clean "+" glyph with rounded caps — the universal "new"/"add"
+ * icon. Drawn from scratch but inspired by the iOS SF Symbol `plus`; shares the
+ * same 24-unit geometry as the Android/iOS `PlusIcon` so every client matches.
+ */
+/**
+ * Clean `+` plus-sign glyph (24-unit viewBox, 2px round-cap stroke). Matches
+ * termtastic's Android/iOS `PlusIcon` so the "New" affordance reads the same
+ * across the family. Exposed `internal` so [AppShellMount] can paint the
+ * topbar "New" split-button with it (issue #65 swapped the old window-with-`+`
+ * mark for this plain plus).
+ */
+internal const val ICON_NEW_TAB: String =
+    "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
+        "stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\">" +
+        "<line x1=\"12\" y1=\"5\" x2=\"12\" y2=\"19\"/>" +
+        "<line x1=\"5\" y1=\"12\" x2=\"19\" y2=\"12\"/></svg>"
 
 /** Inline SVG: a sidebar panel with the left column highlighted. */
 private const val ICON_LEFT_SIDEBAR: String =
@@ -89,15 +100,18 @@ private const val ICON_THEME_MANAGER: String =
         "<circle cx=\"17.5\" cy=\"10.5\" r=\"1\" fill=\"currentColor\" stroke=\"none\"/>" +
         "</svg>"
 
-/** Inline SVG: 2×2 grid suggesting layout presets. Generous gaps + 1.4
- *  stroke read cleanly at 16×16. */
+/**
+ * Inline SVG: one large pane on the left with two smaller panes stacked on the
+ * right — a "layout presets" glyph drawn from scratch but inspired by the iOS
+ * SF Symbol `rectangle.3.group`. Shares the same 24-unit geometry as the
+ * Android/iOS `LayoutGridIcon` so every client shows an identical mark.
+ */
 private const val ICON_LAYOUT: String =
-    "<svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" " +
-        "stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linejoin=\"round\">" +
-        "<rect x=\"2.5\" y=\"2.5\" width=\"4.5\" height=\"4.5\" rx=\"1\"/>" +
-        "<rect x=\"9\" y=\"2.5\" width=\"4.5\" height=\"4.5\" rx=\"1\"/>" +
-        "<rect x=\"2.5\" y=\"9\" width=\"4.5\" height=\"4.5\" rx=\"1\"/>" +
-        "<rect x=\"9\" y=\"9\" width=\"4.5\" height=\"4.5\" rx=\"1\"/></svg>"
+    "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
+        "stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linejoin=\"round\">" +
+        "<rect x=\"4\" y=\"5\" width=\"8.5\" height=\"14\" rx=\"1.2\"/>" +
+        "<rect x=\"14.5\" y=\"5\" width=\"5.5\" height=\"6\" rx=\"1.2\"/>" +
+        "<rect x=\"14.5\" y=\"13\" width=\"5.5\" height=\"6\" rx=\"1.2\"/></svg>"
 
 /**
  * Build a generic icon-button suitable for the topbar trailing area.
@@ -164,6 +178,9 @@ fun buildNewWindowButton(
  * other types are one hover + click away.
  *
  * @param tooltip hover label / accessible name on the host button.
+ * @param iconHtml inline SVG painted on the host button. Defaults to the
+ *   window-with-`+` [buildNewWindowButton] glyph; pass [ICON_NEW_TAB] for a
+ *   plain plus when the button reads as a general "New" menu (issue #65).
  * @param items lazy provider returning the menu rows. Evaluated each
  *   time the menu opens so the host can return contextual items (e.g.
  *   different actions per active tab).
@@ -175,10 +192,11 @@ fun buildNewWindowButton(
  */
 fun buildNewWindowSplitButton(
     tooltip: String = "New pane",
+    iconHtml: String = ICON_NEW_WINDOW,
     items: () -> List<HoverMenuItem>,
     onDefaultClick: () -> Unit,
 ): HTMLElement {
-    val btn = buildNewWindowButton(tooltip, onDefaultClick)
+    val btn = buildTopbarIconButton(iconHtml, tooltip, onDefaultClick)
     attachHoverMenu(btn, items)
     return btn
 }

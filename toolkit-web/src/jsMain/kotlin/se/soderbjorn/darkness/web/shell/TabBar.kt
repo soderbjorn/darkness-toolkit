@@ -160,11 +160,13 @@ class TabBarSpec(
     val showAddButton: Boolean = false,
     val callbacks: TabBarCallbacks = TabBarCallbacks(),
     /**
-     * When `true`, append a `⋮` overflow menu after the add button. The
-     * menu offers "New tab" / "Rename" / "Close" / "Hide / Show in tab
-     * bar" / "Hide / Show in side bar" on the active tab plus a section
-     * listing every hidden tab (click to activate). Rows are gated on the
-     * matching callback being non-null and the tab supporting the action.
+     * When `true`, append a far-right `⋮` overflow menu after the strip.
+     * Since issue #65 it lists only the hidden ("Unlisted") tabs — each
+     * row activates the tab and (when [TabBarCallbacks.onSetHidden] is
+     * wired) offers a "Show in tab bar" affordance to un-hide it. The menu
+     * renders no button at all when no tabs are hidden. Per-tab actions
+     * (Rename / Close / Hide / Show) live in each tab's own dot menu
+     * instead — see [appendTabDotMenu].
      */
     val showOverflowMenu: Boolean = false,
 )
@@ -175,6 +177,7 @@ object TabBarClassNames {
     const val STRIP = "dt-tabbar-strip"
     const val TAB = "dt-tab"
     const val TAB_SELECTED = "dt-selected"
+    const val TAB_UNLISTED = "dt-tab-unlisted"
     const val TAB_DRAGGING = "dt-dragging"
     const val TAB_DROP_BEFORE = "dt-drop-before"
     const val TAB_DROP_AFTER = "dt-drop-after"
@@ -198,6 +201,14 @@ object TabBarClassNames {
  * @return a fresh tab-bar [HTMLElement] ready to be appended to the host
  */
 fun renderTabBar(spec: TabBarSpec): HTMLElement {
+    // Each tab's dot menu and the far-right overflow menu mount their
+    // dropdown list on `document.body` (so the strip's overflow-x scroll
+    // can't clip it). Re-rendering builds fresh lists, so purge any from a
+    // prior render first — otherwise they accumulate as orphans, one per
+    // tab per render.
+    val staleLists = document.querySelectorAll(".dt-tabbar-menu-list")
+    for (i in 0 until staleLists.length) (staleLists.item(i) as HTMLElement).remove()
+
     val bar = document.createElement("div") as HTMLElement
     bar.className = TabBarClassNames.BAR
 
@@ -206,9 +217,12 @@ fun renderTabBar(spec: TabBarSpec): HTMLElement {
     bar.appendChild(strip)
 
     for (tab in spec.tabs) {
-        // Hidden tabs stay in the spec (so the overflow menu can list them)
-        // but are skipped from the strip itself.
-        if (tab.isHidden) continue
+        // Hidden ("unlisted") tabs are normally skipped from the strip (the
+        // overflow menu lists them instead). Exception: a hidden tab that is
+        // currently active is shown temporarily, so the user can always see
+        // the tab they're actually looking at. It drops back out of the strip
+        // as soon as another tab is activated.
+        if (tab.isHidden && tab.id != spec.activeTabId) continue
         strip.appendChild(buildTabElement(tab, spec))
     }
 
@@ -224,11 +238,14 @@ fun renderTabBar(spec: TabBarSpec): HTMLElement {
     }
 
     if (spec.showOverflowMenu) {
-        // The `⋮` overflow menu sits at the end of the strip and exposes
-        // "New tab" / "Rename" / "Close" / "Hide" affordances plus the
-        // hidden-tabs activation list. Implementation lives in a sibling
-        // file so this primitive stays focused on the strip itself.
-        appendTabBarOverflowMenu(bar, spec)
+        // The `⋮` overflow menu is appended into the strip itself so it sits
+        // right after the last tab (part of the tab bar), and lists the
+        // hidden ("Unlisted") tabs (click to activate, or un-hide). It
+        // self-suppresses when none are hidden. Per-tab actions live in
+        // each tab's dot menu (appendTabDotMenu, wired in buildTabElement).
+        // Implementation lives in a sibling file so this primitive stays
+        // focused on the strip itself.
+        appendTabBarOverflowMenu(strip, spec)
     }
 
     installTabNavigationHotkeys(spec)
@@ -295,7 +312,11 @@ private fun cycleTab(spec: TabBarSpec, forward: Boolean) {
 fun buildTabElement(tab: TabSpec, spec: TabBarSpec): HTMLElement {
     val el = document.createElement("div") as HTMLElement
     el.className = TabBarClassNames.TAB +
-        if (tab.id == spec.activeTabId) " ${TabBarClassNames.TAB_SELECTED}" else ""
+        (if (tab.id == spec.activeTabId) " ${TabBarClassNames.TAB_SELECTED}" else "") +
+        // A hidden tab only reaches the strip while it's the active tab
+        // (shown temporarily so its dot menu is reachable). Mark it so CSS
+        // can hint — via a dashed outline — that it's an unlisted tab.
+        (if (tab.isHidden) " ${TabBarClassNames.TAB_UNLISTED}" else "")
     el.setAttribute("data-tab-id", tab.id)
     el.setAttribute("role", "tab")
     el.setAttribute("tabindex", "0")
@@ -346,6 +367,13 @@ fun buildTabElement(tab: TabSpec, spec: TabBarSpec): HTMLElement {
     if (tab.isRenamable && spec.callbacks.onRename != null) {
         wireInlineRename(label, tab, spec)
     }
+
+    // Per-tab `⋮` dot menu at the tab's right corner, holding the actions
+    // scoped to this tab (Rename / Close / Hide in tab bar / Hide in side
+    // bar). Self-gates: renders nothing when no relevant callback is wired.
+    // Issue #65 moved these out of the far-right `⋮` overflow menu so the
+    // overflow only carries cross-tab concerns (the hidden-tabs list).
+    appendTabDotMenu(el, tab, spec)
 
     return el
 }

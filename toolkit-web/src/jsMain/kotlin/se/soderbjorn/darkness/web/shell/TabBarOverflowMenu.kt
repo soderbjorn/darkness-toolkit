@@ -1,26 +1,35 @@
 /*
  * TabBarOverflowMenu.kt (jsMain)
  * -------------------------------
- * The far-right `⋮` overflow menu for the toolkit's tab bar.
+ * Two related tab-bar menus (issue #65 split the old single `⋮` menu):
  *
- * Ported from termtastic's `TabBarMenu.kt` and made generic over
- * [TabBarSpec] / [TabBarCallbacks] so any consumer that opts in via
- * [TabBarSpec.showOverflowMenu] gets the same affordances:
+ *  1. The per-tab **dot menu** (`appendTabDotMenu`) — a small `⋮` button at
+ *     each tab's right corner holding the actions that belong to *that*
+ *     specific tab:
+ *       - "Rename"                 (when the tab is renamable)
+ *       - "Close"                  (when `onClose` is set)
+ *       - "Hide / Show in tab bar" (when `onSetHidden` is set)
+ *       - "Hide / Show in side bar"(when `onSetHiddenFromSidebar` is set)
+ *     Called from [buildTabElement] for every visible tab.
  *
- *  - "New tab"                              (when `onAdd` is set)
- *  - "Rename" the active tab                (when active tab is renamable)
- *  - "Close" the active tab                 (when active tab is closable)
- *  - "Hide / Show in tab bar"               (when `onSetHidden` is set)
- *  - "Hide / Show in side bar"              (when `onSetHiddenFromSidebar` is set)
- *  - One row per hidden tab → click activates (always when any exist)
+ *  2. The far-right **overflow menu** (`appendTabBarOverflowMenu`) — the
+ *     `⋮` button after the last tab. It now holds only the cross-tab
+ *     concern that has no home on an individual tab: the list of currently
+ *     hidden ("Unlisted") tabs, each row activating the tab and offering a
+ *     "Show in tab bar" affordance to un-hide it. Renders nothing (no
+ *     button) when there are no hidden tabs.
  *
- * The menu list is appended to `document.body` rather than the tab bar
- * itself so the bar's horizontal-overflow scroll doesn't clip it. The
- * positioning logic mirrors termtastic's: anchor the menu's top-right at
- * the button's bottom-right, clamping to the viewport.
+ * "New tab" no longer lives in either menu — it moved to the topbar "New"
+ * (`+`) split-button (see AppShellMount.kt).
+ *
+ * Both menus mount their dropdown list on `document.body` (not the tab bar
+ * itself) so the bar's horizontal-overflow scroll doesn't clip it; the
+ * shared `.dt-tabbar-menu-list` class means only one dropdown is open at a
+ * time across every tab dot menu and the overflow menu.
  *
  * @see TabBarSpec.showOverflowMenu
  * @see appendTabBarOverflowMenu
+ * @see appendTabDotMenu
  */
 package se.soderbjorn.darkness.web.shell
 
@@ -29,26 +38,125 @@ import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.Event
 
 /**
- * Append the `⋮` overflow menu (button + dropdown list) to the given
- * [tabBar] element. Called from [renderTabBar] when
- * [TabBarSpec.showOverflowMenu] is true; callers don't normally invoke
- * this directly.
+ * Append the per-tab `⋮` dot menu (button + dropdown list) to a single
+ * tab element. Called from [buildTabElement] for every visible tab.
+ *
+ * The menu surfaces only the actions that target *this* tab — Rename,
+ * Close, Hide/Show in tab bar, Hide/Show in side bar — each gated on the
+ * matching [TabBarCallbacks] being non-null (and, for Rename, on
+ * [TabSpec.isRenamable]). When none apply, no button is rendered so
+ * read-only tabs stay chromeless.
+ *
+ * @param tabEl the `.dt-tab` element to attach the menu button to (the
+ *   dropdown list is mounted on `document.body`).
+ * @param tab   the tab this menu acts on.
+ * @param spec  the parent spec; supplies the callbacks + the label seed
+ *   for inline rename.
+ */
+internal fun appendTabDotMenu(tabEl: HTMLElement, tab: TabSpec, spec: TabBarSpec) {
+    val cb = spec.callbacks
+    val canRename = tab.isRenamable && cb.onRename != null
+    val canClose = cb.onClose != null
+    val canHide = cb.onSetHidden != null
+    val canHideSidebar = cb.onSetHiddenFromSidebar != null
+    if (!canRename && !canClose && !canHide && !canHideSidebar) return
+
+    val menuWrap = document.createElement("div") as HTMLElement
+    menuWrap.className = "dt-tab-menu"
+
+    val menuBtn = document.createElement("button") as HTMLElement
+    menuBtn.className = "dt-tab-menu-button"
+    menuBtn.setAttribute("type", "button")
+    menuBtn.title = "Tab actions"
+    menuBtn.setAttribute("aria-label", "Tab actions")
+    menuBtn.textContent = "⋮"
+    // Don't let a mousedown on the menu button initiate the parent tab's
+    // HTML5 drag (mirrors the close-button guard in buildTabElement).
+    menuBtn.addEventListener("mousedown", { ev: Event -> ev.stopPropagation() })
+
+    val menuList = document.createElement("div") as HTMLElement
+    menuList.className = "dt-tabbar-menu-list dt-tab-menu-list"
+
+    val closeMenu = wireMenuToggle(menuWrap, menuBtn, menuList)
+
+    // The dot menu only exists on tabs that are actually in the strip (a
+    // hidden tab is rendered only while active), so the label is always in
+    // the DOM here and inline rename can target it.
+    if (canRename) {
+        menuList.appendChild(menuRow("Rename", ICON_RENAME) {
+            closeMenu()
+            val label = tabEl.querySelector(".${TabBarClassNames.TAB_LABEL}") as? HTMLElement
+            if (label != null) triggerInlineRename(label, tab, spec)
+        })
+    }
+
+    if (canClose) {
+        menuList.appendChild(menuRow("Close", ICON_CLOSE_TAB) {
+            closeMenu()
+            requestTabClose(tab, cb)
+        })
+    }
+
+    // Divider between the act-on-this-tab group (Rename / Close) and the
+    // visibility group (Hide / Show in tab bar / side bar).
+    if ((canRename || canClose) && (canHide || canHideSidebar)) {
+        menuList.appendChild(menuSeparator())
+    }
+
+    if (canHide) {
+        val label = if (tab.isHidden) "Show in tab bar" else "Hide in tab bar"
+        val icon = if (tab.isHidden) ICON_SHOW_TAB else ICON_HIDE_TAB
+        menuList.appendChild(menuRow(label, icon) {
+            closeMenu()
+            cb.onSetHidden!!.invoke(tab.id, !tab.isHidden)
+        })
+    }
+
+    if (canHideSidebar) {
+        val label = if (tab.isHiddenFromSidebar) "Show in side bar" else "Hide in side bar"
+        val icon = if (tab.isHiddenFromSidebar) ICON_SHOW_TAB else ICON_HIDE_TAB
+        menuList.appendChild(menuRow(label, icon) {
+            closeMenu()
+            cb.onSetHiddenFromSidebar!!.invoke(tab.id, !tab.isHiddenFromSidebar)
+        })
+    }
+
+    menuWrap.appendChild(menuBtn)
+    tabEl.appendChild(menuWrap)
+    document.body?.appendChild(menuList)
+}
+
+/**
+ * Append the `⋮` overflow menu (button + dropdown list) to the given [host]
+ * element — the tab **strip**, so the button sits right after the last tab
+ * and reads as part of the tab bar (rather than floating off to the right).
+ * Called from [renderTabBar] when [TabBarSpec.showOverflowMenu] is true;
+ * callers don't normally invoke this directly.
+ *
+ * Since issue #65 the menu lists only the hidden ("Unlisted") tabs — the
+ * per-tab actions moved to each tab's dot menu and "New tab" moved to the
+ * topbar "New" button. When no tabs are hidden the menu has nothing to
+ * show, so this function renders no button at all (an empty `⋮` would be
+ * dead chrome).
  *
  * The dropdown is mounted on `document.body` so the bar's
  * `overflow-x: auto` doesn't clip it; positioning uses the button's
  * bounding rect after the dropdown is opened.
  *
- * @param tabBar the element returned by [renderTabBar] (the menu is
- *   appended into its strip; the dropdown list goes on `document.body`)
- * @param spec   the spec used to render [tabBar]; supplies tab list,
- *   active id, and callbacks
+ * @param host the tab strip element (`.dt-tabbar-strip`) the menu button is
+ *   appended into; the dropdown list goes on `document.body`.
+ * @param spec the spec used to render the bar; supplies tab list, active id,
+ *   and callbacks.
  */
-internal fun appendTabBarOverflowMenu(tabBar: HTMLElement, spec: TabBarSpec) {
+internal fun appendTabBarOverflowMenu(host: HTMLElement, spec: TabBarSpec) {
     val cb = spec.callbacks
-    val activeTab = spec.tabs.firstOrNull { it.id == spec.activeTabId }
-    val activeIsHidden = activeTab?.isHidden == true
-    val activeIsHiddenFromSidebar = activeTab?.isHiddenFromSidebar == true
-    val hiddenTabs = spec.tabs.filter { it.isHidden }
+    // List the hidden ("unlisted") tabs — except the active one, which is
+    // shown temporarily in the strip itself (renderTabBar) so its dot menu
+    // is reachable. Listing it here too would be redundant.
+    val hiddenTabs = spec.tabs.filter { it.isHidden && it.id != spec.activeTabId }
+    // Nothing cross-tab to show → no button. Per-tab actions live in each
+    // tab's own dot menu (appendTabDotMenu).
+    if (hiddenTabs.isEmpty()) return
 
     val menuWrap = document.createElement("div") as HTMLElement
     menuWrap.className = "dt-tabbar-menu"
@@ -56,132 +164,119 @@ internal fun appendTabBarOverflowMenu(tabBar: HTMLElement, spec: TabBarSpec) {
     val menuBtn = document.createElement("button") as HTMLElement
     menuBtn.className = "dt-tabbar-menu-button"
     menuBtn.setAttribute("type", "button")
-    menuBtn.title = "Tab menu"
+    menuBtn.title = "Unlisted tabs"
+    menuBtn.setAttribute("aria-label", "Unlisted tabs")
     menuBtn.textContent = "⋮"
 
     val menuList = document.createElement("div") as HTMLElement
     menuList.className = "dt-tabbar-menu-list"
 
+    val closeMenu = wireMenuToggle(menuWrap, menuBtn, menuList)
+
+    menuList.appendChild(menuHeading("Unlisted tabs"))
+    for (tab in hiddenTabs) {
+        val row = menuRow(tab.label.ifBlank { "(untitled)" }, ICON_HIDDEN_TAB) {
+            closeMenu()
+            cb.onSelect(tab.id)
+        }
+        // Trailing "Show in tab bar" affordance — un-hides the tab. (Clicking
+        // the row instead just activates it, which surfaces it temporarily in
+        // the strip with its dot menu.) Gated on onSetHidden being wired.
+        val unhide = cb.onSetHidden
+        if (unhide != null) {
+            val show = document.createElement("button") as HTMLElement
+            show.className = "dt-tabbar-menu-item-action"
+            show.setAttribute("type", "button")
+            show.title = "Show in tab bar"
+            show.setAttribute("aria-label", "Show in tab bar")
+            show.innerHTML = ICON_SHOW_TAB
+            show.addEventListener("click", { ev: Event ->
+                // Stop the row's activate handler from also firing.
+                ev.stopPropagation()
+                closeMenu()
+                unhide(tab.id, false)
+            })
+            row.appendChild(show)
+        }
+        menuList.appendChild(row)
+    }
+
+    menuWrap.appendChild(menuBtn)
+    host.appendChild(menuWrap)
+    document.body?.appendChild(menuList)
+}
+
+/**
+ * Wire the open/close behaviour shared by the per-tab dot menu and the
+ * tab-bar overflow menu: toggling the dropdown on button click, closing
+ * any other open dropdown first (so only one shows at a time), positioning
+ * the body-mounted list under the button, and dismissing on any outside
+ * press.
+ *
+ * Outside dismissal uses a transparent full-viewport **backdrop** rather
+ * than a `document` click listener. On the Electron/Mac titlebar the empty
+ * tab-bar area is a `-webkit-app-region: drag` zone that swallows mouse
+ * events for window dragging, so a plain `click` listener never fires there
+ * and the menu would stay stuck open. The backdrop (mounted above that drag
+ * region, marked `no-drag`) reliably catches the press and closes the menu.
+ * The dropdown list sits above the backdrop so its own rows stay clickable.
+ *
+ * @param menuWrap the inline wrapper carrying the `.dt-open` styling class.
+ * @param menuBtn  the toggle button.
+ * @param menuList the body-mounted dropdown list (must carry the
+ *   `.dt-tabbar-menu-list` class so the "close others" sweep finds it).
+ * @return a `closeMenu` lambda the caller's rows invoke after acting.
+ */
+private fun wireMenuToggle(
+    menuWrap: HTMLElement,
+    menuBtn: HTMLElement,
+    menuList: HTMLElement,
+): () -> Unit {
+    var backdrop: HTMLElement? = null
     fun closeMenu() {
         menuWrap.classList.remove("dt-open")
         menuList.classList.remove("dt-open")
+        backdrop?.remove()
+        backdrop = null
     }
 
-    // ── New tab ────────────────────────────────────────
-    if (cb.onAdd != null) {
-        menuList.appendChild(menuRow("New tab", ICON_NEW_TAB_MENU) {
-            closeMenu()
-            cb.onAdd.invoke()
-        })
-        if (activeTab != null || hiddenTabs.isNotEmpty()) {
-            menuList.appendChild(menuSeparator())
-        }
-    }
-
-    // ── Active-tab section ─────────────────────────────
-    if (activeTab != null) {
-        val needsHeading = (activeTab.isRenamable && cb.onRename != null) ||
-            cb.onClose != null ||
-            cb.onSetHidden != null ||
-            cb.onSetHiddenFromSidebar != null
-        if (needsHeading) {
-            menuList.appendChild(menuHeading("Active tab"))
-        }
-
-        if (activeTab.isRenamable && cb.onRename != null && !activeIsHidden) {
-            menuList.appendChild(menuRow("Rename", ICON_RENAME) {
-                closeMenu()
-                startTabInlineRename(tabBar, activeTab.id, spec)
-            })
-        }
-
-        // The overflow-menu "Close" entry is gated on `cb.onClose` only —
-        // intentionally NOT on `tab.isClosable`, which controls the per-tab
-        // × button in the strip. Apps frequently want a chromeless strip
-        // (no ×, less visual noise) but still need a way to close from the
-        // menu (matches termtastic's `TabBarMenu.kt`).
-        if (cb.onClose != null) {
-            menuList.appendChild(menuRow("Close", ICON_CLOSE_TAB) {
-                closeMenu()
-                requestTabClose(activeTab, cb)
-            })
-        }
-
-        if (cb.onSetHidden != null) {
-            val label = if (activeIsHidden) "Show in tab bar" else "Hide in tab bar"
-            val icon = if (activeIsHidden) ICON_SHOW_TAB else ICON_HIDE_TAB
-            menuList.appendChild(menuRow(label, icon) {
-                closeMenu()
-                cb.onSetHidden.invoke(activeTab.id, !activeIsHidden)
-            })
-        }
-
-        // Mirror affordance for the host's left sidebar tree. Independent
-        // of the tab-bar toggle above: either or both can be set, so the
-        // user can declutter the sidebar without also hiding the tab from
-        // the strip (or vice versa). Mirrors termtastic's TabBarMenu.
-        if (cb.onSetHiddenFromSidebar != null) {
-            val label = if (activeIsHiddenFromSidebar) "Show in side bar" else "Hide in side bar"
-            val icon = if (activeIsHiddenFromSidebar) ICON_SHOW_TAB else ICON_HIDE_TAB
-            menuList.appendChild(menuRow(label, icon) {
-                closeMenu()
-                cb.onSetHiddenFromSidebar.invoke(activeTab.id, !activeIsHiddenFromSidebar)
-            })
-        }
-    }
-
-    // ── Hidden-tabs section ────────────────────────────
-    if (hiddenTabs.isNotEmpty()) {
-        menuList.appendChild(menuSeparator())
-        menuList.appendChild(menuHeading("Unlisted tabs"))
-        for (tab in hiddenTabs) {
-            val row = menuRow(tab.label.ifBlank { "(untitled)" }, ICON_HIDDEN_TAB) {
-                closeMenu()
-                cb.onSelect(tab.id)
-            }
-            if (tab.id == spec.activeTabId) row.classList.add("dt-active")
-            menuList.appendChild(row)
-        }
-    }
-
-    // ── Open / close + outside-click dismissal ─────────
     menuBtn.addEventListener("click", { ev: Event ->
         ev.stopPropagation()
-        // Close any other open dropdowns first so we never stack two.
-        val openLists = document.querySelectorAll(".dt-tabbar-menu-list.dt-open")
-        for (i in 0 until openLists.length) {
-            val other = openLists.item(i) as HTMLElement
-            if (other !== menuList) other.classList.remove("dt-open")
-        }
         val opening = !menuWrap.classList.contains("dt-open")
-        menuWrap.classList.toggle("dt-open")
-        menuList.classList.toggle("dt-open")
-        if (opening) positionMenuList(menuBtn, menuList)
+        // Clear any other open dropdown (+ its highlight + any stray backdrop)
+        // so we never stack two across the dot menus + overflow menu.
+        val openLists = document.querySelectorAll(".dt-tabbar-menu-list.dt-open")
+        for (i in 0 until openLists.length) (openLists.item(i) as HTMLElement).classList.remove("dt-open")
+        val openWraps = document.querySelectorAll(".dt-tabbar-menu.dt-open, .dt-tab-menu.dt-open")
+        for (i in 0 until openWraps.length) (openWraps.item(i) as HTMLElement).classList.remove("dt-open")
+        val staleBackdrops = document.querySelectorAll(".dt-menu-backdrop")
+        for (i in 0 until staleBackdrops.length) (staleBackdrops.item(i) as HTMLElement).remove()
+        backdrop = null
+
+        if (opening) {
+            menuWrap.classList.add("dt-open")
+            menuList.classList.add("dt-open")
+            positionMenuList(menuBtn, menuList)
+            // Transparent backdrop beneath the dropdown — any press on it
+            // (including over the titlebar drag region) closes the menu.
+            val bd = document.createElement("div") as HTMLElement
+            bd.className = "dt-menu-backdrop"
+            bd.addEventListener("mousedown", { e: Event ->
+                e.stopPropagation()
+                closeMenu()
+            })
+            document.body?.appendChild(bd)
+            backdrop = bd
+        }
     })
 
-    // Outside-click dismissal — installed once on first open, idempotent.
-    document.addEventListener("click", { ev: Event ->
-        if (!menuList.classList.contains("dt-open")) return@addEventListener
-        val target = ev.target as? HTMLElement ?: return@addEventListener
-        if (menuList.contains(target) || menuBtn.contains(target)) return@addEventListener
-        closeMenu()
-    })
-
-    menuWrap.appendChild(menuBtn)
-    tabBar.appendChild(menuWrap)
-    document.body?.appendChild(menuList)
+    return { closeMenu() }
 }
 
 /** Inline SVG icons shipped with each menu row. Kept inline so the
  *  toolkit doesn't need an external icon dependency; sized 14×14 to
  *  match the row label baseline. Termtastic's TabBarMenu uses the same
  *  glyph family — staying consistent across the family. */
-private const val ICON_NEW_TAB_MENU: String =
-    "<svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" " +
-        "stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\">" +
-        "<line x1=\"8\" y1=\"3\" x2=\"8\" y2=\"13\"/>" +
-        "<line x1=\"3\" y1=\"8\" x2=\"13\" y2=\"8\"/></svg>"
-
 private const val ICON_RENAME: String =
     "<svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" " +
         "stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" " +
@@ -239,19 +334,19 @@ private fun menuRow(label: String, iconHtml: String? = null, onClick: () -> Unit
     return row
 }
 
+/** Build a thin horizontal divider row between menu sections. */
+private fun menuSeparator(): HTMLElement {
+    val sep = document.createElement("div") as HTMLElement
+    sep.className = "dt-tabbar-menu-separator"
+    return sep
+}
+
 /** Build a non-interactive section heading row. */
 private fun menuHeading(text: String): HTMLElement {
     val el = document.createElement("div") as HTMLElement
     el.className = "dt-tabbar-menu-heading"
     el.textContent = text
     return el
-}
-
-/** Build a thin horizontal divider row. */
-private fun menuSeparator(): HTMLElement {
-    val sep = document.createElement("div") as HTMLElement
-    sep.className = "dt-tabbar-menu-separator"
-    return sep
 }
 
 /**

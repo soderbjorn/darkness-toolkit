@@ -332,14 +332,20 @@ class LayoutDropdown(
                 "L26.2 15.8 L27.4 15.2 Z\" class=\"dt-layout-preview-other\"/>" +
                 "</svg>"
 
-        /** 2x2 layout glyph used as the trigger button icon. */
+        /**
+         * Layout glyph used as the trigger button icon: one large pane on the
+         * left with two smaller panes stacked on the right. Drawn from scratch
+         * but inspired by the iOS SF Symbol `rectangle.3.group`, and shared
+         * verbatim (same 24-unit
+         * geometry) with the Android `LayoutGridIcon` and iOS `LayoutGridIcon`
+         * so every client shows an identical "layout presets" mark.
+         */
         private const val ICON_LAYOUT: String =
-            "<svg viewBox=\"0 0 16 16\" width=\"16\" height=\"16\" fill=\"none\" " +
-                "stroke=\"currentColor\" stroke-width=\"1.4\" stroke-linejoin=\"round\">" +
-                "<rect x=\"2.5\" y=\"2.5\" width=\"4.5\" height=\"4.5\" rx=\"1\"/>" +
-                "<rect x=\"9\" y=\"2.5\" width=\"4.5\" height=\"4.5\" rx=\"1\"/>" +
-                "<rect x=\"2.5\" y=\"9\" width=\"4.5\" height=\"4.5\" rx=\"1\"/>" +
-                "<rect x=\"9\" y=\"9\" width=\"4.5\" height=\"4.5\" rx=\"1\"/></svg>"
+            "<svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" " +
+                "stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linejoin=\"round\">" +
+                "<rect x=\"4\" y=\"5\" width=\"8.5\" height=\"14\" rx=\"1.2\"/>" +
+                "<rect x=\"14.5\" y=\"5\" width=\"5.5\" height=\"6\" rx=\"1.2\"/>" +
+                "<rect x=\"14.5\" y=\"13\" width=\"5.5\" height=\"6\" rx=\"1.2\"/></svg>"
     }
 }
 
