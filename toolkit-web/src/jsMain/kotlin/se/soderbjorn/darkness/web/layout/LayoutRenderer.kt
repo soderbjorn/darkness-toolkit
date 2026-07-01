@@ -307,14 +307,18 @@ class LayoutRenderer(
             container.classList.add(LayoutClassNames.ROOT)
         }
         container.appendChild(paneArea)
-        // Register pane navigation hotkeys against this renderer.
+        // Register spatial pane navigation hotkeys against this renderer.
+        // Ctrl+Opt+Arrow moves focus to the nearest pane in the pressed
+        // direction (see [focusPaneInDirection]); there is no wrap-around.
         // [HotkeyRegistry.register]'s replace-on-register semantics mean
         // that constructing a new LayoutRenderer (e.g. on tab switch)
         // overwrites the prior binding — there's no per-renderer
         // unregister cost and no risk of stale renderers handling keys
         // after a tab change.
-        HotkeyRegistry.register(StandardHotkeys.NextPane) { cycleFocusedPane(forward = true) }
-        HotkeyRegistry.register(StandardHotkeys.PreviousPane) { cycleFocusedPane(forward = false) }
+        HotkeyRegistry.register(StandardHotkeys.PreviousPane) { focusPaneInDirection(Direction.LEFT) }
+        HotkeyRegistry.register(StandardHotkeys.NextPane) { focusPaneInDirection(Direction.RIGHT) }
+        HotkeyRegistry.register(StandardHotkeys.FocusPaneUp) { focusPaneInDirection(Direction.UP) }
+        HotkeyRegistry.register(StandardHotkeys.FocusPaneDown) { focusPaneInDirection(Direction.DOWN) }
     }
 
     /**
@@ -755,32 +759,102 @@ class LayoutRenderer(
         callbacks.onPaneFocused(paneId)
     }
 
+    /** A cardinal direction for [focusPaneInDirection]. */
+    private enum class Direction { LEFT, RIGHT, UP, DOWN }
+
     /**
-     * Move focus to the next or previous visible (non-minimized) pane in
-     * [lastLayout], wrapping at the ends. No-op when fewer than two
-     * visible panes are present, or when [lastLayout] hasn't been
-     * populated yet (registry hotkeys can fire before the first render
-     * if the host wires them in an unusual order).
-     *
-     * Forward order: the order panes appear in [PaneLayout.floatingPanes],
-     * which is the host's stored order — typically z-order for floating
-     * panes. Stable across renders.
-     *
-     * Called by the [StandardHotkeys.NextPane] / [StandardHotkeys.PreviousPane]
-     * bindings registered in [init].
+     * One on-screen pane, reduced to the data spatial navigation needs:
+     * its id and the centre of its rendered rectangle (viewport px).
      */
-    private fun cycleFocusedPane(forward: Boolean) {
-        val visible = lastLayout.floatingPanes.filterNot { it.isMinimized }
-        if (visible.size < 2) return
-        val currentIdx = visible.indexOfFirst { it.id == focusedLeafId }
-        val nextIdx = when {
-            currentIdx < 0 -> if (forward) 0 else visible.lastIndex
-            forward -> (currentIdx + 1) % visible.size
-            else -> (currentIdx - 1 + visible.size) % visible.size
+    private class PaneCenter(val id: PaneId, val cx: Double, val cy: Double)
+
+    /**
+     * Move focus to the nearest visible pane in [dir] relative to the
+     * currently focused pane, using the panes' actual rendered geometry.
+     *
+     * Replaces the old wrap-around cycle: pressing → from the rightmost
+     * pane does nothing (there's nothing to the right), so the four arrows
+     * map to real spatial movement instead of a linear ring. This is what
+     * makes Ctrl+Opt+Arrow feel like "move to the pane over there."
+     *
+     * Geometry is read live from the DOM (`getBoundingClientRect` on each
+     * `[data-pane-id]` element) rather than from [lastLayout], so it always
+     * reflects what the user sees — including after drags/resizes and while
+     * a pane is maximized. Minimised panes aren't in the DOM and are thus
+     * naturally excluded.
+     *
+     * Selection: among panes whose centre lies strictly in [dir] from the
+     * focused pane's centre, pick the one minimising
+     * `primaryAxisDistance + PERPENDICULAR_WEIGHT * perpendicularOffset`,
+     * so a well-aligned neighbour beats a closer-but-offset one. When no
+     * pane is focused yet, focus the top-left-most pane so the first press
+     * has a sensible anchor.
+     *
+     * No-op when there are fewer than two panes, or when no pane sits in
+     * the requested direction.
+     *
+     * Called by the arrow bindings registered in [init].
+     *
+     * @param dir the direction to move focus in.
+     */
+    private fun focusPaneInDirection(dir: Direction) {
+        val centers = paneCenters()
+        if (centers.size < 2) return
+
+        val current = centers.firstOrNull { it.id == focusedLeafId }
+        if (current == null) {
+            // No anchor yet — enter at the top-left-most pane.
+            val entry = centers.minByOrNull { it.cx + it.cy } ?: return
+            if (entry.id != focusedLeafId) focusPane(entry.id)
+            return
         }
-        val target = visible[nextIdx].id
-        if (target == focusedLeafId) return
-        focusPane(target)
+
+        var best: PaneCenter? = null
+        var bestScore = Double.MAX_VALUE
+        for (c in centers) {
+            if (c.id == current.id) continue
+            val dx = c.cx - current.cx
+            val dy = c.cy - current.cy
+            val primary: Double
+            val perpendicular: Double
+            when (dir) {
+                Direction.RIGHT -> { primary = dx; perpendicular = kotlin.math.abs(dy) }
+                Direction.LEFT -> { primary = -dx; perpendicular = kotlin.math.abs(dy) }
+                Direction.DOWN -> { primary = dy; perpendicular = kotlin.math.abs(dx) }
+                Direction.UP -> { primary = -dy; perpendicular = kotlin.math.abs(dx) }
+            }
+            // Must actually be in the pressed direction.
+            if (primary <= DIRECTION_EPSILON_PX) continue
+            val score = primary + PERPENDICULAR_WEIGHT * perpendicular
+            if (score < bestScore) {
+                bestScore = score
+                best = c
+            }
+        }
+
+        val target = best ?: return
+        focusPane(target.id)
+    }
+
+    /**
+     * Snapshot the centre point of every currently-rendered floating pane.
+     *
+     * Reads the live DOM (`[data-pane-id]` elements inside [paneArea]) so
+     * the result reflects real on-screen geometry. Backing data for
+     * [focusPaneInDirection].
+     *
+     * @return one [PaneCenter] per visible pane, in DOM order.
+     */
+    private fun paneCenters(): List<PaneCenter> {
+        val els = paneArea.querySelectorAll("[data-pane-id]")
+        val out = mutableListOf<PaneCenter>()
+        for (i in 0 until els.length) {
+            val el = els.item(i) as? HTMLElement ?: continue
+            val id = el.getAttribute("data-pane-id") ?: continue
+            val rect = el.getBoundingClientRect()
+            out.add(PaneCenter(id, rect.left + rect.width / 2.0, rect.top + rect.height / 2.0))
+        }
+        return out
     }
 
     private fun applyFocusClass(paneId: PaneId) {
@@ -805,6 +879,22 @@ class LayoutRenderer(
     /** Minimum pane size on either axis, in container fractions.
      *  Two snap steps — matches termtastic's `PaneGeometry.MIN_SIZE`. */
     private val FLOATING_MIN_SIZE = 0.10
+
+    /**
+     * How strongly [focusPaneInDirection] penalises perpendicular offset
+     * versus travel along the pressed axis. `> 1` biases selection toward
+     * panes that line up with the current one, so e.g. pressing → prefers a
+     * horizontally-aligned neighbour over a nearer but vertically-offset
+     * pane.
+     */
+    private val PERPENDICULAR_WEIGHT = 2.0
+
+    /**
+     * Minimum centre-to-centre travel (px) along the pressed axis for a
+     * pane to count as "in that direction" in [focusPaneInDirection].
+     * Guards against near-coincident centres registering as a move.
+     */
+    private val DIRECTION_EPSILON_PX = 1.0
 
     /**
      * Builds one absolutely-positioned pane. The host moves it via

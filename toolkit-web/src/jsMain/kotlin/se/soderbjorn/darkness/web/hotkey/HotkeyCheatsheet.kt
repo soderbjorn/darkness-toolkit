@@ -65,6 +65,25 @@ fun tabSwitchHotkeyEntry(): HotkeyEntry = HotkeyEntry(
 )
 
 /**
+ * Browser variant of [tabSwitchHotkeyEntry] describing the Alt/Option-
+ * augmented positional tab-switch chord the web shell installs
+ * (`StandardHotkeys.webTabSwitchHotkey`: Cmd+Opt/Ctrl+Alt+1…9, where 9
+ * jumps to the last tab).
+ *
+ * Apps add this to their "Windows & tabs" [HotkeyGroup] when running in a
+ * plain browser, mirroring how they add [tabSwitchHotkeyEntry] in the
+ * Electron shell. The extra Alt/Option modifier is what keeps the chord
+ * from colliding with the browser's own Cmd/Ctrl+`<digit>` tab switching.
+ *
+ * @return the cheat-sheet entry describing the web tab-switch chord.
+ * @see tabSwitchHotkeyEntry for the Electron (no Alt) variant.
+ */
+fun webTabSwitchHotkeyEntry(): HotkeyEntry = HotkeyEntry(
+    label = "Switch to tab 1–9 (9 = last)",
+    chord = if (isMacPlatform()) listOf("⌘", "⌥", "1…9") else listOf("Ctrl", "Alt", "1…9"),
+)
+
+/**
  * A titled group of [HotkeyEntry] rows, rendered as one section in the
  * modal. Groups appear in the order supplied to [HotkeysModalSpec].
  */

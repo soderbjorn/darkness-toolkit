@@ -518,6 +518,23 @@ data class AppShellSpec(
      * @see se.soderbjorn.darkness.web.settings.buildAppSettingsSidebar
      */
     val appSettingsContent: (() -> HTMLElement)? = null,
+    /**
+     * Optional factory returning the body element of an app-supplied
+     * "Hotkeys" sidebar — a keyboard-shortcut reference. Unlike
+     * [appSettingsContent] this does NOT add a topbar button; the host opens
+     * the panel programmatically via [AppShellHandle.openHotkeysSidebar]
+     * (e.g. from an in-app "Hotkeys" button or an Electron menu item). The
+     * factory is invoked each time the sidebar opens, so apps can rebuild
+     * the body against live state (e.g. the current platform).
+     *
+     * When `null` (the default) [AppShellHandle.openHotkeysSidebar] is a
+     * no-op. Mutual exclusion with the Theme Manager, Appearance and App
+     * Settings sidebars is handled by the mount: opening any one animates
+     * whichever sibling is open closed first.
+     *
+     * @see se.soderbjorn.darkness.web.settings.buildHotkeysSidebar
+     */
+    val hotkeysContent: (() -> HTMLElement)? = null,
     val isElectron: Boolean = false,
     val theme: ThemeBootstrap = ThemeBootstrap.default(),
     /**
@@ -686,6 +703,19 @@ interface AppShellHandle {
      *   toolkit's own persistence.
      */
     fun applyExternalLayoutState(layoutStateJson: String)
+
+    /**
+     * Opens the app-supplied Hotkeys sidebar (see
+     * [AppShellSpec.hotkeysContent]), animating any other right-side panel
+     * (Theme Manager / Appearance / App Settings) closed first so only one
+     * is ever mounted. Idempotent — a no-op when the Hotkeys sidebar is
+     * already open, and a no-op entirely when [AppShellSpec.hotkeysContent]
+     * is `null`.
+     *
+     * Hosts wire this to whatever entry points make sense — e.g. an in-app
+     * "Hotkeys" button and, on Electron, an application-menu item.
+     */
+    fun openHotkeysSidebar()
 
     /** Tears down the shell, releasing toolkit-owned resources. */
     fun dispose()

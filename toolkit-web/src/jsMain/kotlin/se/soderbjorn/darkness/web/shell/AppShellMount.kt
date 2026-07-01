@@ -43,14 +43,18 @@ import se.soderbjorn.darkness.web.applyPaneHeaderFontFamily
 import se.soderbjorn.darkness.web.applyPaneHeaderFontSizePx
 import se.soderbjorn.darkness.web.setDtCustomTitleBarBodyClass
 import se.soderbjorn.darkness.web.settings.AppSettingsSidebarSpec
+import se.soderbjorn.darkness.web.settings.HotkeysSidebarSpec
 import se.soderbjorn.darkness.web.settings.SettingsSidebarSpec
 import se.soderbjorn.darkness.web.settings.buildAppSettingsSidebar
+import se.soderbjorn.darkness.web.settings.buildHotkeysSidebar
 import se.soderbjorn.darkness.web.settings.buildSettingsSidebar
 import se.soderbjorn.darkness.web.settings.closeAppSettingsSidebar
 import se.soderbjorn.darkness.web.settings.closeSettingsSidebar
 import se.soderbjorn.darkness.web.settings.isAppSettingsSidebarOpen
+import se.soderbjorn.darkness.web.settings.isHotkeysSidebarOpen
 import se.soderbjorn.darkness.web.settings.isSettingsSidebarOpen
 import se.soderbjorn.darkness.web.settings.toggleAppSettingsSidebar
+import se.soderbjorn.darkness.web.settings.toggleHotkeysSidebar
 import se.soderbjorn.darkness.web.settings.toggleSettingsSidebar
 import se.soderbjorn.darkness.web.themeeditor.DefaultThemeManagerHost
 import se.soderbjorn.darkness.web.themeeditor.DefaultThemeManagerState
@@ -517,6 +521,10 @@ fun mountAppShell(
             state.applyExternalLayoutState(layoutStateJson)
         }
 
+        override fun openHotkeysSidebar() {
+            state.openHotkeysSidebar()
+        }
+
         override fun dispose() {
             initJob.cancel()
             spec.rootContainer.innerHTML = ""
@@ -601,6 +609,18 @@ private class ShellState(
     private var local: PersistedShellLayout? = null
     /** Non-null only in source mode. */
     private var external: TabListSnapshot? = null
+
+    /**
+     * Source-mode only: the tab the user last optimistically activated
+     * (via [TabBarCallbacks.onSelect]) that the app hasn't yet confirmed by
+     * pushing a matching snapshot. While set, incoming snapshots keep this
+     * as the displayed active tab instead of a stale intermediate value —
+     * so a burst of fast tab switches never visibly reverts before the
+     * server catches up. Cleared once a pushed snapshot's `activeTabId`
+     * matches it (server confirmed) or the tab disappears (activation
+     * rejected / tab closed). See [bindTabSource].
+     */
+    private var pendingActiveTabId: String? = null
 
     /**
      * Toolkit-owned layout state — per-tab active preset, pane importance
@@ -1019,7 +1039,26 @@ private class ShellState(
         this.local = null
         source.subscribe { snapshot ->
             val membershipChanged = syncControllersWithSnapshot(snapshot)
-            this.external = snapshot
+            // Honour an in-flight optimistic activation: until the app
+            // confirms it by pushing a snapshot whose activeTabId matches
+            // the pending tab, keep displaying the pending tab rather than
+            // whatever (possibly stale, mid-burst) activeTabId this snapshot
+            // carries. This is what stops a fast Cmd+digit burst from
+            // flickering back to an intermediate tab before it settles.
+            val pending = pendingActiveTabId
+            this.external = when {
+                pending == null -> snapshot
+                snapshot.activeTabId == pending -> {
+                    pendingActiveTabId = null // server caught up
+                    snapshot
+                }
+                snapshot.tabs.any { it.id == pending } ->
+                    snapshot.copy(activeTabId = pending) // hold the user's target
+                else -> {
+                    pendingActiveTabId = null // pending tab gone (closed/rejected)
+                    snapshot
+                }
+            }
             rerender()
             // Auto is the only preset that re-tiles on membership
             // change. Apps push a fresh snapshot for every model
@@ -1038,6 +1077,32 @@ private class ShellState(
         // played; we drive the rebuild from there.
         if (open != leftSidebarController.isOpen) {
             leftSidebarController.toggle(requestRebuild = ::rerender)
+        }
+    }
+
+    /**
+     * Opens the Hotkeys sidebar, animating any other right-side panel closed
+     * first (same mutually-exclusive hand-off the topbar buttons use). No-op
+     * when the host supplied no [AppShellSpec.hotkeysContent] or the panel is
+     * already open. Backs [AppShellHandle.openHotkeysSidebar].
+     */
+    fun openHotkeysSidebar() {
+        if (spec.hotkeysContent == null) return
+        if (isHotkeysSidebarOpen()) return
+        when {
+            isThemeManagerSidebarOpen() -> toggleThemeManagerSidebar {
+                rerender()
+                toggleHotkeysSidebar(::rerender)
+            }
+            isSettingsSidebarOpen() -> toggleSettingsSidebar {
+                rerender()
+                toggleHotkeysSidebar(::rerender)
+            }
+            isAppSettingsSidebarOpen() -> toggleAppSettingsSidebar {
+                rerender()
+                toggleHotkeysSidebar(::rerender)
+            }
+            else -> toggleHotkeysSidebar(::rerender)
         }
     }
 
@@ -1134,6 +1199,18 @@ private class ShellState(
             rightSlot.appendChild(buildAppSettingsSidebar(
                 AppSettingsSidebarSpec(
                     title = "App settings",
+                    bodyFactory = { factory() },
+                )
+            ))
+        } else if (isHotkeysSidebarOpen() && spec.hotkeysContent != null) {
+            // App-supplied Hotkeys reference — same chrome contract as the
+            // App Settings panel above. Opened programmatically via
+            // [AppShellHandle.openHotkeysSidebar] (no topbar button); the
+            // null-check guards hot-reload / config-flip races the same way.
+            val factory = spec.hotkeysContent
+            rightSlot.appendChild(buildHotkeysSidebar(
+                HotkeysSidebarSpec(
+                    title = "Keyboard shortcuts",
                     bodyFactory = { factory() },
                 )
             ))
@@ -1557,7 +1634,25 @@ private class ShellState(
         val callbacks = if (srcMode) {
             val src = spec.tabSource!!
             TabBarCallbacks(
-                onSelect = { id -> src.onSelect(id) },
+                onSelect = { id ->
+                    // Optimistic local activation: reflect the switch in the
+                    // tab strip and swap the rendered pane layout IMMEDIATELY
+                    // rather than waiting for the app's async round-trip to
+                    // push a fresh snapshot back. Source-mode activation is
+                    // app-owned and typically server-round-tripped; without
+                    // this, a fast burst of tab-switch key presses shows
+                    // nothing until each echo lands, which reads as flicker /
+                    // a switch that "doesn't take". The next pushed snapshot
+                    // (from bindTabSource) reconciles this value, so a
+                    // rejected activation self-heals on the following push.
+                    val snap = external
+                    if (snap != null && snap.activeTabId != id && snap.tabs.any { it.id == id }) {
+                        pendingActiveTabId = id
+                        external = snap.copy(activeTabId = id)
+                        rerender()
+                    }
+                    src.onSelect(id)
+                },
                 onClose = src.onClose,
                 onAdd = src.onAdd,
                 onRename = src.onRename,
@@ -1801,6 +1896,10 @@ private class ShellState(
                             rerender()
                             toggleThemeManagerSidebar(::rerender)
                         }
+                        isHotkeysSidebarOpen() -> toggleHotkeysSidebar {
+                            rerender()
+                            toggleThemeManagerSidebar(::rerender)
+                        }
                         else -> toggleThemeManagerSidebar(::rerender)
                     }
                 },
@@ -1826,6 +1925,10 @@ private class ShellState(
                             rerender()
                             toggleSettingsSidebar(::rerender)
                         }
+                        isHotkeysSidebarOpen() -> toggleHotkeysSidebar {
+                            rerender()
+                            toggleSettingsSidebar(::rerender)
+                        }
                         else -> toggleSettingsSidebar(::rerender)
                     }
                 },
@@ -1848,6 +1951,10 @@ private class ShellState(
                                 toggleAppSettingsSidebar(::rerender)
                             }
                             isSettingsSidebarOpen() -> toggleSettingsSidebar {
+                                rerender()
+                                toggleAppSettingsSidebar(::rerender)
+                            }
+                            isHotkeysSidebarOpen() -> toggleHotkeysSidebar {
                                 rerender()
                                 toggleAppSettingsSidebar(::rerender)
                             }

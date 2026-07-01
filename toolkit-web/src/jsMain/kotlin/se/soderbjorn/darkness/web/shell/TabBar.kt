@@ -307,20 +307,29 @@ private fun cycleTab(spec: TabBarSpec, forward: Boolean) {
  * [renderTabBar] so each chord closes over the latest spec
  * ([HotkeyRegistry]'s replace-on-register semantics).
  *
- * Gated to the Electron desktop shell ([isElectronPlatform]): a real
- * browser reserves Cmd/Ctrl+`<digit>` for switching *browser* tabs and a
- * page `keydown` can't reliably override it, so arming the chord there
- * would either fight the browser or silently lose — we leave it to the
- * browser instead.
+ * Chord per platform:
+ * - **Electron:** plain Cmd/Ctrl+`<digit>` ([StandardHotkeys.tabSwitchHotkey])
+ *   — the desktop shell owns the chord, so no conflict.
+ * - **Browser:** Cmd+Opt/Ctrl+Alt+`<digit>`
+ *   ([StandardHotkeys.webTabSwitchHotkey]) — a real browser reserves plain
+ *   Cmd/Ctrl+`<digit>` for switching *its own* tabs and a page `keydown`
+ *   can't reliably override it, so we add an Alt/Option modifier to get a
+ *   browser-safe chord that behaves identically. This gives web users the
+ *   same positional tab switching Electron users have.
  *
  * @param spec the current tab-bar spec (its visible tabs and
  *   [TabBarCallbacks.onSelect] are read each time a chord fires).
  * @see resolveTabSwitchIndex
  */
 private fun installTabNumberHotkeys(spec: TabBarSpec) {
-    if (!isElectronPlatform()) return
+    val electron = isElectronPlatform()
     for (position in 1..9) {
-        HotkeyRegistry.register(StandardHotkeys.tabSwitchHotkey(position)) {
+        val chord = if (electron) {
+            StandardHotkeys.tabSwitchHotkey(position)
+        } else {
+            StandardHotkeys.webTabSwitchHotkey(position)
+        }
+        HotkeyRegistry.register(chord) {
             switchToTabByPosition(spec, position)
         }
     }

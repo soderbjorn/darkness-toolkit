@@ -26,11 +26,29 @@ package se.soderbjorn.darkness.web.hotkey
  * cheat-sheet) or unbind them via [HotkeyRegistry.unregister].
  */
 object StandardHotkeys {
-    /** Cycle to the previous (non-minimized) pane. Wraps. */
+    /**
+     * Spatially focus the pane to the **left** of the focused one.
+     *
+     * Despite the historical name, this is no longer a wrap-around cycle:
+     * [LayoutRenderer] resolves it to the nearest pane whose geometry sits
+     * left of the current pane, and does nothing when there is none (see
+     * `focusPaneInDirection`). Kept named `PreviousPane` so existing app
+     * cheat-sheets that reference it keep compiling.
+     */
     val PreviousPane: Hotkey = Hotkey(key = "ArrowLeft", ctrl = true, alt = true)
 
-    /** Cycle to the next (non-minimized) pane. Wraps. */
+    /**
+     * Spatially focus the pane to the **right** of the focused one.
+     *
+     * @see PreviousPane for the spatial (non-wrapping) semantics.
+     */
     val NextPane: Hotkey = Hotkey(key = "ArrowRight", ctrl = true, alt = true)
+
+    /** Spatially focus the pane **above** the focused one (no wrap). */
+    val FocusPaneUp: Hotkey = Hotkey(key = "ArrowUp", ctrl = true, alt = true)
+
+    /** Spatially focus the pane **below** the focused one (no wrap). */
+    val FocusPaneDown: Hotkey = Hotkey(key = "ArrowDown", ctrl = true, alt = true)
 
     /** Cycle to the previous (non-hidden) tab. Wraps. */
     val PreviousTab: Hotkey = Hotkey(key = "ArrowLeft", ctrl = true, alt = true, shift = true)
@@ -59,6 +77,30 @@ object StandardHotkeys {
      */
     fun tabSwitchHotkey(position: Int): Hotkey = Hotkey(
         key = position.toString(),
+        meta = isMacPlatform(),
+        ctrl = !isMacPlatform(),
+    )
+
+    /**
+     * Browser-safe variant of [tabSwitchHotkey] for the *web* shell: the
+     * same positional "jump to tab N" behaviour but with an extra Alt/Option
+     * modifier so it doesn't collide with the chord a real browser reserves
+     * for switching its own tabs (plain Cmd/Ctrl+`<digit>`).
+     *
+     * On macOS this is Cmd+Opt+`<digit>` (`meta` + `alt`); on Windows/Linux
+     * it's Ctrl+Alt+`<digit>`. Bound by `renderTabBar`'s
+     * `installTabNumberHotkeys` when running outside Electron, so browser
+     * users get the same tab-number switching Electron users have via
+     * [tabSwitchHotkey]. As with [tabSwitchHotkey], the "9 = last tab" rule
+     * lives in the resolver (`resolveTabSwitchIndex`), not here.
+     *
+     * @param position 1-based key digit, `1`..`9`.
+     * @return the chord for that digit on the current platform.
+     * @see tabSwitchHotkey for the Electron (no Alt) variant.
+     */
+    fun webTabSwitchHotkey(position: Int): Hotkey = Hotkey(
+        key = position.toString(),
+        alt = true,
         meta = isMacPlatform(),
         ctrl = !isMacPlatform(),
     )
