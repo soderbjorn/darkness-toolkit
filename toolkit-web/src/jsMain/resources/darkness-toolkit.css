@@ -2212,6 +2212,37 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .dt-topbar {
     background: var(--t-border, rgba(255, 255, 255, 0.1));
 }
 
+/* ── Pane menu submenu (nested flyout) ─────────────────────────
+   Opened beside a `.dt-pane-menu-item-has-submenu` row by hovering or
+   clicking it (see `SubmenuHost` in PaneMenu.kt). The flyout is a DOM
+   child of the parent `.dt-pane-menu` but `position: fixed`, so it
+   inherits the popover surface styling above and only needs stacking,
+   scroll containment for long lists (e.g. many tabs), and the chevron/
+   expanded-row affordances. */
+.dt-pane-menu-submenu {
+    /* One step above the parent popover: the flyout deliberately overlaps
+       the parent menu's edge by a couple of pixels (see positionSubmenu)
+       so pointer travel never crosses a dead gap, and it must paint on
+       top of the parent in both the default and flip-left placements. */
+    z-index: 1002;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+.dt-pane-menu-item-chevron {
+    display: inline-flex;
+    align-items: center;
+    flex-shrink: 0;
+    margin-left: auto;
+    color: var(--t-text-dim, #b0b0b0);
+}
+.dt-pane-menu-item-chevron svg {
+    display: block;
+}
+/* Keep the row visually "on" while its flyout is open, mirroring hover. */
+.dt-pane-menu-item.dt-pane-menu-item-has-submenu[aria-expanded="true"] {
+    background: var(--t-surface-alt, rgba(255, 255, 255, 0.08));
+}
+
 /* ── Confirm dialog ───────────────────────────────────────── */
 .dt-modal-backdrop {
     position: fixed;
@@ -2302,8 +2333,29 @@ body.dt-electron-mac.dt-custom-titlebar:not(.dt-mac-fullscreen) .dt-topbar {
     outline: 2px solid var(--t-accent, #4f8cff);
     outline-offset: 2px;
 }
+/* Destructive confirm — opt-in via `destructive = true` on showConfirmDialog,
+   reserved for genuinely dangerous, hard-to-undo actions. (No toolkit dialog
+   currently uses it: the tab-close confirmation originally did, but even this
+   muted treatment read as too alarming for a routine action — termtastic
+   issue #90 — so tab close now uses the standard accent confirm.) A solid
+   --t-danger fill read as an out-of-theme bright red against the dark themes,
+   so the variant keeps a quiet danger-tinted surface and paints the label/
+   border with the theme's danger token — same treatment as the theme editor's
+   Delete button. Still clearly the destructive action, but muted and
+   consistent with the active palette. */
 .dt-modal-btn-confirm.dt-destructive {
-    background: var(--t-danger, #b33a36);
+    background: color-mix(in srgb, var(--t-danger, #b33a36) 14%, transparent);
+    color: var(--t-danger, #e5534b);
+    border-color: color-mix(in srgb, var(--t-danger, #b33a36) 45%, transparent);
+}
+.dt-modal-btn-confirm.dt-destructive:hover {
+    /* Deepen the tint instead of the brightness filter the accent variant
+       uses — brightening a translucent red wash looks washed-out. */
+    filter: none;
+    background: color-mix(in srgb, var(--t-danger, #b33a36) 26%, transparent);
+}
+.dt-modal-btn-confirm.dt-destructive:focus {
+    outline-color: var(--t-danger, #b33a36);
 }
 
 /* ── Theme manager sidebar (right-side panel) ─────────────── */

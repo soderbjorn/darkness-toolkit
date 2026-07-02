@@ -293,9 +293,11 @@ class ToolkitHotkeysModal {
     }
 
     private companion object {
-        // Theme-aware modal chrome — uses the toolkit's standard
-        // `--t-*` variables so the cheatsheet picks up whichever theme
-        // the host is rendering. Keep var names in sync with darkness-toolkit.css.
+        // Theme-aware modal chrome — uses the toolkit's standard flat
+        // `--t-*` tokens (--t-surface, --t-text, --t-border, --t-surface-alt;
+        // the exact names ThemeCssVars.toCssVarMap writes) so the cheatsheet
+        // picks up whichever theme the host is rendering. Keep var names in
+        // sync with darkness-toolkit.css / toCssVarMap.
         const val STYLESHEET: String = """
             .dt-hotkeys-backdrop {
                 position: fixed; inset: 0;
@@ -307,9 +309,9 @@ class ToolkitHotkeysModal {
                 width: min(640px, 92vw);
                 max-height: 85vh;
                 display: flex; flex-direction: column;
-                background: var(--t-surface-base, #1e1e1e);
-                color: var(--t-text-primary, #e6e6e6);
-                border: 1px solid var(--t-border-strong, rgba(255,255,255,0.18));
+                background: var(--t-surface, #1e1e1e);
+                color: var(--t-text, #e6e6e6);
+                border: 1px solid var(--t-border, rgba(255,255,255,0.18));
                 border-radius: 10px;
                 box-shadow: 0 28px 72px rgba(0, 0, 0, 0.65), 0 10px 24px rgba(0, 0, 0, 0.45);
                 overflow: hidden;
@@ -318,7 +320,7 @@ class ToolkitHotkeysModal {
             .dt-hotkeys-header {
                 display: flex; align-items: center; gap: 12px;
                 padding: 10px 12px;
-                border-bottom: 1px solid var(--t-border-subtle, rgba(255,255,255,0.08));
+                border-bottom: 1px solid var(--t-border, rgba(255,255,255,0.08));
             }
             .dt-hotkeys-title {
                 font-size: 14px; font-weight: 600;
@@ -348,7 +350,7 @@ class ToolkitHotkeysModal {
                 padding: 7px 6px; border-radius: 6px;
             }
             .dt-hotkeys-row:hover {
-                background: var(--t-surface-overlay, rgba(255,255,255,0.04));
+                background: var(--t-surface-alt, rgba(255,255,255,0.04));
             }
             .dt-hotkeys-icon {
                 display: inline-flex;
@@ -362,9 +364,9 @@ class ToolkitHotkeysModal {
                 min-width: 22px; padding: 2px 6px;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
                 font-size: 11px; line-height: 1;
-                color: var(--t-text-primary, #e6e6e6);
-                background: var(--t-surface-overlay, rgba(255,255,255,0.08));
-                border: 1px solid var(--t-border-subtle, rgba(255,255,255,0.18));
+                color: var(--t-text, #e6e6e6);
+                background: var(--t-surface-alt, rgba(255,255,255,0.08));
+                border: 1px solid var(--t-border, rgba(255,255,255,0.18));
                 border-bottom-width: 2px;
                 border-radius: 4px;
             }
@@ -372,7 +374,7 @@ class ToolkitHotkeysModal {
                 padding: 8px 18px 12px;
                 font-size: 11px;
                 opacity: 0.55;
-                border-top: 1px solid var(--t-border-subtle, rgba(255,255,255,0.06));
+                border-top: 1px solid var(--t-border, rgba(255,255,255,0.06));
             }
         """
     }

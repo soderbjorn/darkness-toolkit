@@ -48,6 +48,15 @@ object PaneMenuClassNames {
     const val SEPARATOR = "dt-pane-menu-separator"
     const val FLIPPED_UP = "dt-pane-menu-flip-up"
     const val FLIPPED_LEFT = "dt-pane-menu-flip-left"
+
+    /** Nested flyout surface opened from a row with [PaneMenuItem.submenu]. */
+    const val SUBMENU = "dt-pane-menu-submenu"
+
+    /** Row that carries a submenu — gets the trailing chevron affordance. */
+    const val ITEM_HAS_SUBMENU = "dt-pane-menu-item-has-submenu"
+
+    /** Trailing `›` chevron span inside a submenu-bearing row. */
+    const val ITEM_CHEVRON = "dt-pane-menu-item-chevron"
 }
 
 /**
@@ -73,6 +82,18 @@ object PaneMenuClassNames {
  *   so the stylesheet can paint it in the destructive-action colour.
  * @property isSeparator when `true` the row is rendered as a thin rule;
  *   all other fields except keys are ignored.
+ * @property submenu    optional child rows. When non-null and non-empty the
+ *   row renders a trailing `›` chevron and — instead of firing [handler] —
+ *   opens a nested `.dt-pane-menu.dt-pane-menu-submenu` flyout beside the
+ *   row on hover or click (only one flyout is open at a time; hovering a
+ *   sibling row dismisses it after a short grace delay — see
+ *   [SUBMENU_CLOSE_GRACE_MS] — so diagonal pointer travel into the flyout
+ *   doesn't kill it). Submenu rows support everything a
+ *   top-level row does *except* further nesting: exactly one level of
+ *   submenu is supported, which is all the toolkit's consumers need (e.g.
+ *   termtastic's "Move to tab ▸ <tab list>"). Clicking a submenu row
+ *   dismisses the entire popover before its handler runs, matching the
+ *   top-level contract. `null` (the default) keeps the plain-row behaviour.
  */
 data class PaneMenuItem(
     val label: String,
@@ -82,6 +103,7 @@ data class PaneMenuItem(
     val isActive: Boolean = false,
     val isDanger: Boolean = false,
     val isSeparator: Boolean = false,
+    val submenu: List<PaneMenuItem>? = null,
 )
 
 /**
@@ -203,6 +225,21 @@ object PaneMenuItems {
 }
 
 /**
+ * Grace period (ms) before a hover-triggered submenu dismissal takes
+ * effect. Moving the pointer diagonally from a submenu-bearing row into
+ * its flyout inevitably crosses sibling rows; without a delay each of
+ * those crossings would kill the flyout just as the user is about to
+ * pick an entry. Entering the flyout (or returning to the anchor row)
+ * within this window cancels the pending dismissal. Explicit dismissals
+ * (outside click, Escape, scroll, resize, choosing an item) remain
+ * immediate and never go through this timer.
+ *
+ * @see SubmenuHost.scheduleClose
+ * @see SubmenuHost.requestOpen
+ */
+private const val SUBMENU_CLOSE_GRACE_MS = 350
+
+/**
  * Renders [spec] as a popover anchored to [anchor] and attaches it to
  * `document.body`. Returns a closer the caller can invoke to dismiss the
  * popover programmatically; the popover otherwise dismisses itself on
@@ -234,6 +271,9 @@ fun openPaneMenu(anchor: HTMLElement, spec: PaneMenuSpec): () -> Unit {
     menu.addEventListener("mousedown", { ev -> ev.stopPropagation() })
 
     var closed = false
+    // Declared before `close` so the close lambda can cancel any pending
+    // submenu grace timer; assigned right after `close` exists.
+    var submenuHost: SubmenuHost? = null
     lateinit var close: () -> Unit
     val onOutsideMouseDown: (Event) -> Unit = { ev ->
         val target = (ev as MouseEvent).target as? HTMLElement
@@ -252,6 +292,9 @@ fun openPaneMenu(anchor: HTMLElement, spec: PaneMenuSpec): () -> Unit {
     close = {
         if (!closed) {
             closed = true
+            // Tear down the flyout state first so a pending grace timer
+            // can't fire against elements we're about to remove.
+            submenuHost?.closeCurrent()
             document.removeEventListener("mousedown", onOutsideMouseDown, true)
             document.removeEventListener("keydown", onKeyDown, true)
             window.removeEventListener("resize", onResize)
@@ -260,7 +303,9 @@ fun openPaneMenu(anchor: HTMLElement, spec: PaneMenuSpec): () -> Unit {
         }
     }
 
-    for (item in spec.items) menu.appendChild(buildMenuRow(item, close))
+    val host = SubmenuHost(menu, close)
+    submenuHost = host
+    for (item in spec.items) menu.appendChild(buildMenuRow(item, close, host))
 
     document.body?.appendChild(menu)
     positionMenu(menu, anchor)
@@ -275,14 +320,165 @@ fun openPaneMenu(anchor: HTMLElement, spec: PaneMenuSpec): () -> Unit {
     return close
 }
 
-/** Builds one row of the popover: separator or icon-button-style item. */
-private fun buildMenuRow(item: PaneMenuItem, close: () -> Unit): HTMLElement {
+/**
+ * Per-popover submenu coordinator. Owned by one [openPaneMenu] invocation;
+ * guarantees at most one nested flyout is mounted at a time and tears it
+ * down when a sibling row is hovered (after the [SUBMENU_CLOSE_GRACE_MS]
+ * grace delay, so pointer travel into the flyout survives crossing
+ * siblings), when a different submenu opens, or — for free, because the
+ * flyout is a DOM child of [menu] — when the whole popover closes and
+ * removes [menu] from the document.
+ *
+ * Hover forgiveness: exactly one deferred action (a close or a switch to
+ * another row's flyout) can be pending at a time, tracked by
+ * [pendingTimer]. Re-entering the open flyout or its anchor row cancels
+ * it; hovering yet another sibling replaces it, restarting the clock.
+ * Only hover paths are deferred — [closeCurrent] (used by explicit
+ * dismissals) always acts immediately.
+ *
+ * @property menu     the parent `.dt-pane-menu` surface the flyout mounts
+ *   into. Mounting inside the menu (rather than `<body>`) keeps the
+ *   popover's capture-phase outside-click containment check
+ *   (`menu.contains(target)`) valid for submenu clicks without extra
+ *   listeners. `position: fixed` still resolves against the viewport
+ *   because `.dt-pane-menu` establishes no transform/filter containing
+ *   block.
+ * @property closeAll closes the entire popover — passed into submenu rows
+ *   so activating one dismisses everything, matching top-level rows.
+ */
+private class SubmenuHost(val menu: HTMLElement, val closeAll: () -> Unit) {
+    /** Remover for the currently mounted flyout, or `null` when none is open. */
+    private var closeOpen: (() -> Unit)? = null
+
+    /** The row whose flyout is currently open (used to make re-hover a no-op). */
+    private var openForRow: HTMLElement? = null
+
+    /**
+     * `window.setTimeout` id of the pending deferred action (grace-delay
+     * close or deferred switch to another row), or `null` when nothing is
+     * pending. Single slot: scheduling anything new replaces it.
+     */
+    private var pendingTimer: Int? = null
+
+    /**
+     * Cancels the pending deferred close/switch, if any. Called when the
+     * pointer lands somewhere that should keep the current flyout alive
+     * (the flyout itself, or its anchor row). Idempotent.
+     */
+    fun cancelPending() {
+        pendingTimer?.let { window.clearTimeout(it) }
+        pendingTimer = null
+    }
+
+    /** Immediately dismisses the currently open flyout, if any. Idempotent. */
+    fun closeCurrent() {
+        cancelPending()
+        closeOpen?.invoke()
+        closeOpen = null
+        openForRow = null
+    }
+
+    /**
+     * Requests dismissal of the open flyout after the grace delay. Used by
+     * plain sibling rows' hover so the flyout survives the pointer's
+     * diagonal travel across them; each new hover restarts the clock.
+     * Also replaces a pending deferred switch (see [requestOpen]) — the
+     * pointer has moved on. No-op when no flyout is open.
+     */
+    fun scheduleClose() {
+        if (closeOpen == null) return
+        cancelPending()
+        pendingTimer = window.setTimeout({
+            pendingTimer = null
+            closeCurrent()
+        }, SUBMENU_CLOSE_GRACE_MS)
+    }
+
+    /**
+     * Hover entry point for a submenu-bearing row. Opens [row]'s flyout
+     * immediately when no flyout is open; when a *different* row's flyout
+     * is open, defers the switch by the grace delay (cancelled if the
+     * pointer returns to the open flyout in time) instead of instantly
+     * killing it. Re-hovering the already-open row just cancels any
+     * pending dismissal.
+     *
+     * @param row   the submenu-bearing row acting as the anchor.
+     * @param items the child rows to render inside the flyout.
+     * @see open for the immediate (click) path.
+     */
+    fun requestOpen(row: HTMLElement, items: List<PaneMenuItem>) {
+        if (openForRow == row) {
+            cancelPending()
+            return
+        }
+        if (closeOpen == null) {
+            open(row, items)
+            return
+        }
+        cancelPending()
+        pendingTimer = window.setTimeout({
+            pendingTimer = null
+            open(row, items)
+        }, SUBMENU_CLOSE_GRACE_MS)
+    }
+
+    /**
+     * Opens (or keeps open) the flyout for [row] showing [items],
+     * immediately. Any flyout belonging to a different row is dismissed
+     * first. This is the click path; hover goes through [requestOpen].
+     *
+     * @param row   the submenu-bearing row acting as the anchor.
+     * @param items the child rows to render inside the flyout.
+     */
+    fun open(row: HTMLElement, items: List<PaneMenuItem>) {
+        if (openForRow == row) {
+            cancelPending()
+            return
+        }
+        closeCurrent()
+        val sub = document.createElement("div") as HTMLElement
+        sub.className = "${PaneMenuClassNames.MENU} ${PaneMenuClassNames.SUBMENU}"
+        sub.setAttribute("role", "menu")
+        // Only one nesting level: child rows get no SubmenuHost, so any
+        // `submenu` they might carry is ignored (documented on PaneMenuItem).
+        for (item in items) sub.appendChild(buildMenuRow(item, closeAll, submenuHost = null))
+        // Reaching the flyout keeps it alive: cancel any grace-delay
+        // dismissal (or deferred switch) scheduled while the pointer was
+        // crossing sibling rows on its way here.
+        sub.addEventListener("mouseenter", { cancelPending() })
+        menu.appendChild(sub)
+        positionSubmenu(sub, menu, row)
+        row.setAttribute("aria-expanded", "true")
+        openForRow = row
+        closeOpen = {
+            sub.parentElement?.removeChild(sub)
+            row.removeAttribute("aria-expanded")
+        }
+    }
+}
+
+/**
+ * Builds one row of the popover: separator, plain item, or submenu-bearing
+ * item (trailing chevron; opens its flyout on hover/click via [submenuHost]).
+ *
+ * @param item        the row description.
+ * @param close       closes the entire popover (invoked before a leaf row's
+ *   handler runs).
+ * @param submenuHost coordinator for nested flyouts, or `null` when this row
+ *   is itself inside a flyout (submenus don't nest).
+ */
+private fun buildMenuRow(
+    item: PaneMenuItem,
+    close: () -> Unit,
+    submenuHost: SubmenuHost?,
+): HTMLElement {
     if (item.isSeparator) {
         val sep = document.createElement("div") as HTMLElement
         sep.className = PaneMenuClassNames.SEPARATOR
         sep.setAttribute("role", "separator")
         return sep
     }
+    val submenuItems = item.submenu?.takeIf { it.isNotEmpty() && submenuHost != null }
     val btn = document.createElement("button") as HTMLButtonElement
     btn.type = "button"
     btn.setAttribute("role", "menuitem")
@@ -290,6 +486,7 @@ private fun buildMenuRow(item: PaneMenuItem, close: () -> Unit): HTMLElement {
         append(PaneMenuClassNames.ITEM)
         if (item.isDanger) append(' ').append(PaneMenuClassNames.ITEM_DANGER)
         if (item.isActive) append(' ').append(PaneMenuClassNames.ITEM_ACTIVE)
+        if (submenuItems != null) append(' ').append(PaneMenuClassNames.ITEM_HAS_SUBMENU)
     }
     btn.className = classes
     btn.disabled = !item.isEnabled
@@ -305,6 +502,39 @@ private fun buildMenuRow(item: PaneMenuItem, close: () -> Unit): HTMLElement {
     label.textContent = item.label
     btn.appendChild(label)
 
+    if (submenuItems != null) {
+        // Submenu-bearing row: trailing chevron; hover/click opens the
+        // flyout instead of firing `handler` (which is ignored for these).
+        btn.setAttribute("aria-haspopup", "menu")
+        val chevron = document.createElement("span") as HTMLElement
+        chevron.className = PaneMenuClassNames.ITEM_CHEVRON
+        chevron.innerHTML =
+            "<svg viewBox=\"0 0 24 24\" width=\"12\" height=\"12\" fill=\"none\" stroke=\"currentColor\" " +
+                "stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">" +
+                "<polyline points=\"9 6 15 12 9 18\"/></svg>"
+        btn.appendChild(chevron)
+        btn.addEventListener("mouseenter", {
+            // Hover defers to the grace-delay coordinator so an already-
+            // open sibling flyout isn't yanked away mid-travel.
+            if (item.isEnabled) submenuHost!!.requestOpen(btn, submenuItems)
+        })
+        btn.addEventListener("click", { ev ->
+            ev.stopPropagation()
+            ev.preventDefault()
+            // Click is an explicit gesture — open immediately.
+            if (item.isEnabled) submenuHost!!.open(btn, submenuItems)
+        })
+        return btn
+    }
+
+    // Plain row: hovering it dismisses any sibling row's open flyout, so
+    // moving the pointer down the parent menu doesn't leave a stale submenu.
+    // Deferred by the grace delay: crossing this row on the way to the
+    // flyout must not kill it (entering the flyout cancels the timer).
+    if (submenuHost != null) {
+        btn.addEventListener("mouseenter", { submenuHost.scheduleClose() })
+    }
+
     btn.addEventListener("click", { ev ->
         ev.stopPropagation()
         ev.preventDefault()
@@ -315,6 +545,63 @@ private fun buildMenuRow(item: PaneMenuItem, close: () -> Unit): HTMLElement {
         item.handler()
     })
     return btn
+}
+
+/**
+ * Positions a submenu flyout [sub] beside its anchor [row] in the parent
+ * [menu]. Default placement is to the RIGHT of the parent menu, top-aligned
+ * with the row (minus the surface padding so the first flyout row lines up
+ * with the anchor row). Flips to the left side when the right edge would
+ * clip the viewport, and clamps vertically the same way [positionMenu] does.
+ *
+ * The flyout slightly OVERLAPS the parent menu's edge (rather than sitting
+ * a couple of pixels away) so there is no dead strip between the two
+ * surfaces for the pointer to fall into on its way across — part of the
+ * hover-forgiveness work alongside [SUBMENU_CLOSE_GRACE_MS]. The flyout's
+ * higher z-index (`.dt-pane-menu-submenu`) keeps the overlap painting on
+ * top of the parent in both placements.
+ *
+ * Must run after [sub] is in the document so the size reads are real.
+ *
+ * @param sub  the flyout element (already appended to [menu]).
+ * @param menu the parent popover surface.
+ * @param row  the submenu-bearing row acting as the anchor.
+ */
+private fun positionSubmenu(sub: HTMLElement, menu: HTMLElement, row: HTMLElement) {
+    // Viewport margin only — between menu and flyout we *overlap* instead.
+    val gap = 2.0
+    // How far the flyout overlaps the parent menu's edge (covers the 1px
+    // border on each surface, leaving no dead gap for the pointer).
+    val overlap = 2.0
+    val viewportW = window.innerWidth.toDouble()
+    val viewportH = window.innerHeight.toDouble()
+    sub.style.position = "fixed"
+    sub.style.left = "0px"
+    sub.style.top = "0px"
+    sub.style.visibility = "hidden"
+
+    val menuRect = menu.getBoundingClientRect()
+    val rowRect = row.getBoundingClientRect()
+    val subW = sub.offsetWidth.toDouble()
+    val subH = sub.offsetHeight.toDouble()
+
+    var left = menuRect.right - overlap
+    // Align the flyout's first row with the anchor row: offset by the
+    // surface padding (4px, see .dt-pane-menu) plus the 1px border.
+    var top = rowRect.top - 5.0
+
+    if (left + subW > viewportW - gap) {
+        left = (menuRect.left - subW + overlap).coerceAtLeast(gap)
+        sub.classList.add(PaneMenuClassNames.FLIPPED_LEFT)
+    }
+    if (top + subH > viewportH - gap) {
+        top = (viewportH - subH - gap).coerceAtLeast(gap)
+    }
+    if (top < gap) top = gap
+
+    sub.style.left = "${left}px"
+    sub.style.top = "${top}px"
+    sub.style.visibility = ""
 }
 
 /**

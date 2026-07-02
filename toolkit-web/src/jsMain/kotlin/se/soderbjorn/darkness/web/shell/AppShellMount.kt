@@ -18,6 +18,7 @@ import se.soderbjorn.darkness.core.Appearance
 import se.soderbjorn.darkness.core.PersistKeys
 import se.soderbjorn.darkness.core.ThemeSnapshotV2
 import se.soderbjorn.darkness.web.applyTheme
+import se.soderbjorn.darkness.web.hotkey.HotkeyBindings
 import se.soderbjorn.darkness.web.injectDarknessToolkitStyles
 import se.soderbjorn.darkness.web.isDarkActive
 import se.soderbjorn.darkness.web.layout.DEFAULT_LAYOUT_GRID
@@ -465,6 +466,22 @@ fun mountAppShell(
         val sidebarRaw = spec.persister.read(PersistKeys.SIDEBAR_STATE)
         if (sidebarRaw != null) state.applyCollapsedSections(decodeCollapsedSectionsJson(sidebarRaw))
 
+        // 1b'. Restore the user's custom hotkey bindings and install the
+        //      write-back hook. `applyCustomBindingsJson` rebinds every
+        //      action registered so far and any action registered later
+        //      resolves its effective chords against this custom map, so
+        //      ordering vs. component registration doesn't matter. The
+        //      persist hook writes through the app's Persister — for
+        //      server-backed apps (termtastic) that lands the blob in the
+        //      same server-managed settings file as theme/appearance;
+        //      such apps should ALSO call `applyCustomBindingsJson` when
+        //      a live settings push carries a new value.
+        val hotkeysRaw = spec.persister.read(PersistKeys.HOTKEY_BINDINGS)
+        HotkeyBindings.applyCustomBindingsJson(hotkeysRaw)
+        HotkeyBindings.onPersist = { json ->
+            scope.launch { spec.persister.write(PersistKeys.HOTKEY_BINDINGS, json) }
+        }
+
         // 1c. Restore toolkit-owned layout state (preset + paneOrder +
         //     geometry per tab). Mode-agnostic — the toolkit owns this
         //     across local and source mode. Must precede the tab/pane
@@ -653,6 +670,28 @@ private class ShellState(
      * any of them, so only genuinely remote blobs are adopted.
      */
     private val recentLayoutWrites: ArrayDeque<PersistedLayoutState> = ArrayDeque()
+
+    /**
+     * The last layout-state value actually written out by
+     * [persistLayoutState] (or adopted from persistence/a remote client —
+     * see [applyPersistedLayoutState]). Used as a value-level dedup: a
+     * persist request whose merged state equals this is dropped without
+     * touching the persister.
+     *
+     * This is the choke point that stops the settings write storm behind
+     * termtastic#93: [persistLayoutState] is invoked very liberally — once
+     * per tab-source snapshot from [syncControllersWithSnapshot], from
+     * every controller `onChange` (including pure focus changes via
+     * `setActive`), and once per pane from [maybeReapplyPreset]'s
+     * re-tile loop — and before this guard each of those calls produced an
+     * outbound write even when nothing had changed. For server-backed
+     * persisters (termtastic's `POST /api/ui-settings` bridge) that meant
+     * every config broadcast made every connected desktop client re-POST
+     * an identical LAYOUT_STATE blob, which the server then re-broadcast
+     * to every client (including mobile) — thousands of redundant
+     * round-trips per hour that starved the mobile clients' connect path.
+     */
+    private var lastPersistedLayoutState: PersistedLayoutState? = null
 
     /**
      * Per-tab [LayoutController] keyed by tab id. Lazily populated by
@@ -947,15 +986,18 @@ private class ShellState(
         // Drive controller + geometry state through the same diff path
         // source mode uses, so add/remove of locally-seeded panes seeds
         // default geometry and triggers Auto reflow if active.
-        val membershipChanged = syncControllersWithSnapshot(localSyntheticSnapshot())
+        val changedTabs = syncControllersWithSnapshot(localSyntheticSnapshot())
         rerender()
         // Auto is the only preset that re-tiles on membership change —
         // its contract (see [LayoutPreset.Auto]) is "the toolkit picks
         // geometry for the current pane count." Other presets are
         // applied once when the user picks them from the dropdown and
         // then geometry is sticky; focus-only snapshots must not move
-        // panes around.
-        if (membershipChanged && activePresetIsAuto()) maybeReapplyPresetForActiveTab()
+        // panes around. Every changed tab re-tiles — not just the active
+        // one — so panes that appear in a background tab land tiled.
+        changedTabs.forEach { tabId ->
+            if (presetIsAuto(tabId)) maybeReapplyPreset(tabId)
+        }
     }
 
     /**
@@ -964,15 +1006,45 @@ private class ShellState(
      * lands. Pre-populates [layoutControllers] for every tab the persisted
      * state knows about so the first snapshot doesn't reset their preset
      * back to [LayoutPreset.Custom].
+     *
+     * Writes are suppressed while hydrating (via [applyingExternal]):
+     * `reset` / `setPreset` fire the controllers' `onChange`, which is
+     * wired to [persistLayoutState] — re-persisting what was just read
+     * is pure churn, and for server-backed persisters it used to fire a
+     * burst of redundant round-trips on every page load (observed while
+     * debugging termtastic#86).
      */
     fun applyPersistedLayoutState(s: PersistedLayoutState) {
-        geometryState = s
-        s.paneOrderByTab.forEach { (tabId, order) ->
-            controllerFor(tabId).reset(order)
+        val wasApplying = applyingExternal
+        applyingExternal = true
+        try {
+            geometryState = s
+            // Seed the persist-dedup baseline with the hydrated/adopted
+            // state: this blob is by definition already persisted (we just
+            // read it, or another client just wrote it), so a subsequent
+            // [persistLayoutState] whose merged state still equals it must
+            // not round-trip it back to the persister (termtastic#93).
+            lastPersistedLayoutState = s
+            s.paneOrderByTab.forEach { (tabId, order) ->
+                controllerFor(tabId).reset(order)
+            }
+            s.presetByTab.forEach { (tabId, key) ->
+                LayoutPreset.fromKey(key)?.let { controllerFor(tabId).setPreset(it) }
+            }
+        } finally {
+            applyingExternal = wasApplying
         }
-        s.presetByTab.forEach { (tabId, key) ->
-            LayoutPreset.fromKey(key)?.let { controllerFor(tabId).setPreset(it) }
-        }
+        // Also mark the state as "already known" for the external-adopt
+        // dedup: the server pushes the persisted blob once on connect, and
+        // that push can arrive AFTER the first snapshot has advanced
+        // [geometryState] past it (new pane seeded + Auto-tiled). Without
+        // this entry the boot push fails the `parsed == geometryState`
+        // check in [applyExternalLayoutState], is mistaken for a remote
+        // change, and re-adopts the stale pre-boot blob — wiping the
+        // freshly tiled tab back to (per-render random) default geometry.
+        // Observed while verifying termtastic#86 on a fresh database.
+        recentLayoutWrites.addLast(s)
+        while (recentLayoutWrites.size > RECENT_LAYOUT_WRITES) recentLayoutWrites.removeFirst()
     }
 
     /**
@@ -984,6 +1056,14 @@ private class ShellState(
      * change, echoed back through the server broadcast, doesn't churn). While
      * applying, [persistLayoutState] is suppressed via [applyingExternal] so
      * adopting a remote change never writes it back out.
+     *
+     * After adopting, the blob is validated against the live snapshot via
+     * [reconcileAdoptedLayoutState]: an externally-authored blob can be
+     * stale relative to tabs/panes this client already renders (authored
+     * before they existed, or keyed by colliding ids from another server
+     * database), and adopting it verbatim would leave live panes without
+     * geometry — which the renderer papers over with a fresh random
+     * default on every paint.
      *
      * @param layoutStateJson the blob string as produced by [encodeLayoutStateJson].
      */
@@ -1001,7 +1081,47 @@ private class ShellState(
         } finally {
             applyingExternal = false
         }
+        reconcileAdoptedLayoutState()
         rerender()
+    }
+
+    /**
+     * Repairs [geometryState] after an external blob was adopted so it is
+     * consistent with the tabs/panes this client is actually rendering
+     * (from [lastSnapshot]).
+     *
+     * Two repairs, mirroring what the snapshot-diff path does for fresh
+     * data:
+     *  1. [reconcilePersistedTabState] per tab — drops adopted per-tab
+     *     state that belongs to a dead namesake tab (colliding ids from
+     *     another server database; see its kdoc).
+     *  2. Seeds default geometry for any live pane the adopted blob has
+     *     no entry for (the blob may predate the pane), then Auto-retiles
+     *     the affected tab when its preset is Auto. Without the seed the
+     *     pane has no persisted geometry at all and [geometryFor] hands
+     *     the renderer a NEW random default rectangle on every paint.
+     *
+     * Called only from [applyExternalLayoutState], after the adopt.
+     */
+    private fun reconcileAdoptedLayoutState() {
+        lastSnapshot.tabs.forEach { tab ->
+            val curr = tab.panes.map { it.id }.toSet()
+            reconcilePersistedTabState(tab.id, curr)
+            val tabMap = geometryState.geometryByTab[tab.id].orEmpty()
+            val missing = curr.filter { tabMap[it] == null }
+            if (missing.isEmpty()) return@forEach
+            var topZ = tabMap.values.maxOfOrNull { it.zIndex } ?: 0
+            var seeded = tabMap
+            missing.forEach { id ->
+                topZ += 1
+                seeded = seeded + (id to defaultGeometryForNewPane()
+                    .copy(zIndex = topZ, isMaximized = false))
+            }
+            geometryState = geometryState.copy(
+                geometryByTab = geometryState.geometryByTab + (tab.id to seeded),
+            )
+            if (presetIsAuto(tab.id)) maybeReapplyPreset(tab.id)
+        }
     }
 
     /**
@@ -1038,7 +1158,7 @@ private class ShellState(
     fun bindTabSource(source: TabSource) {
         this.local = null
         source.subscribe { snapshot ->
-            val membershipChanged = syncControllersWithSnapshot(snapshot)
+            val changedTabs = syncControllersWithSnapshot(snapshot)
             // Honour an in-flight optimistic activation: until the app
             // confirms it by pushing a snapshot whose activeTabId matches
             // the pending tab, keep displaying the pending tab rather than
@@ -1066,7 +1186,17 @@ private class ShellState(
             // tab activation) — and a non-Auto preset must leave the
             // user's geometry alone, otherwise the focused pane bubbles
             // to slot 0 via paneOrder and the panes visibly swap.
-            if (membershipChanged && activePresetIsAuto()) maybeReapplyPresetForActiveTab()
+            //
+            // Re-tile every tab whose membership changed, not only the
+            // active one: a new tab's first pane can arrive while this
+            // client still displays another tab (server race, or the tab
+            // was created by a different client), and the later switch to
+            // it is a focus-only snapshot that never re-tiles — leaving
+            // the pane at its cascading seed geometry instead of the
+            // full-bleed Auto tile (termtastic#86).
+            changedTabs.forEach { tabId ->
+                if (presetIsAuto(tabId)) maybeReapplyPreset(tabId)
+            }
         }
     }
 
@@ -1475,8 +1605,9 @@ private class ShellState(
                         }
                     },
                     // Confirm before closing a pane. The toolkit's
-                    // `confirmClosePane` shows a destructive-styled dialog
-                    // citing the pane title. Apps that wrap their own
+                    // `confirmClosePane` shows an accent-styled (non-
+                    // destructive) dialog citing the pane title. Apps that
+                    // wrap their own
                     // confirmation around the pane-close gesture can flip
                     // this off via a future spec field.
                     confirmFloatingClose = true,
@@ -1676,7 +1807,16 @@ private class ShellState(
                 onSelect = { id -> mutateLocal { it.copy(activeTabId = id) } },
                 onClose = { id -> mutateLocal { current ->
                     val nextTabs = current.tabs - id
-                    val nextActive = if (current.activeTabId == id) nextTabs.firstOrNull() else current.activeTabId
+                    // When closing the active tab, prefer promoting a
+                    // *listed* tab (one not hidden from the strip) so the
+                    // user isn't dropped onto content with no visible strip
+                    // entry; fall back to any surviving tab only when every
+                    // remaining tab is unlisted (issue #88 in termtastic).
+                    val nextActive = if (current.activeTabId == id) {
+                        nextTabs.firstOrNull { it !in current.tabsHidden } ?: nextTabs.firstOrNull()
+                    } else {
+                        current.activeTabId
+                    }
                     current.copy(
                         tabs = nextTabs,
                         tabLabels = current.tabLabels - id,
@@ -2604,6 +2744,15 @@ private class ShellState(
      * [PersistedLayoutState] and writes it under [PersistKeys.LAYOUT_STATE].
      * Called on every controller `onChange` (preset / paneOrder mutations)
      * and on every [updateGeometry] call.
+     *
+     * Value-level dedup: when the merged state equals the last state this
+     * client persisted (or hydrated — see [lastPersistedLayoutState]), the
+     * write is skipped entirely. Callers are deliberately allowed to invoke
+     * this liberally (per snapshot, per focus change, per re-tiled pane);
+     * only *actual* state changes reach the persister. Without this guard
+     * every server config broadcast made each desktop client re-POST an
+     * identical blob, and the resulting merge → broadcast → merge traffic
+     * storm starved mobile clients' connect path (termtastic#93).
      */
     private fun persistLayoutState() {
         if (applyingExternal) return
@@ -2614,6 +2763,9 @@ private class ShellState(
             paneOrderByTab = paneOrderByTab,
         )
         geometryState = merged
+        // No-op writes stop here: identical state was already persisted.
+        if (merged == lastPersistedLayoutState) return
+        lastPersistedLayoutState = merged
         // Remember this write so [applyExternalLayoutState] can recognise (and
         // skip) its server echo instead of re-adopting it and looping.
         recentLayoutWrites.addLast(merged)
@@ -2709,6 +2861,12 @@ private class ShellState(
         val tabMap = geometryState.geometryByTab[tabId].orEmpty()
         val current = tabMap[paneId] ?: defaultGeometryForNewPane()
         val updated = transform(current)
+        // No-op guard: a re-tile that computes the exact geometry the pane
+        // already has (the common case when Auto re-runs on a focus-only or
+        // unrelated snapshot) must not rebuild state or ping the persister
+        // (termtastic#93). Seeding a brand-new entry (pane absent from the
+        // map) still falls through even when transform returns the default.
+        if (updated == current && tabMap.containsKey(paneId)) return
         val nextTab = tabMap + (paneId to updated)
         geometryState = geometryState.copy(
             geometryByTab = geometryState.geometryByTab + (tabId to nextTab),
@@ -2726,12 +2884,31 @@ private class ShellState(
      * callers feed it either the source-mode snapshot or
      * [localSyntheticSnapshot] in local mode.
      *
-     * @return `true` if the active tab's pane membership (add or remove)
-     *   changed in this snapshot. Callers use this to decide whether to
-     *   re-tile via [maybeReapplyPresetForActiveTab]; a focus-only
-     *   snapshot returns `false` so the visible pane positions stay put.
+     * @return the ids of every tab whose pane membership (add or remove)
+     *   changed in this snapshot — not just the active tab's. Callers use
+     *   this to decide which tabs to re-tile via [maybeReapplyPreset];
+     *   a focus-only snapshot returns an empty set so the visible pane
+     *   positions stay put. Background tabs matter here: a tab created
+     *   (with its first pane) while another tab is displayed — e.g. by a
+     *   second client on the same server — must still get its Auto
+     *   re-tile, otherwise its panes keep the cascading seed geometry and
+     *   the later tab *activation* (a focus-only snapshot) never re-tiles
+     *   them (termtastic#86).
+     *
+     * **Stale-id collisions.** Persisted layout state is keyed by tab id,
+     * but hosts may reuse ids across unrelated tab lifetimes: termtastic's
+     * server allocates sequential ids (`t1`, `t2`, …) per database, so a
+     * dev server, a packaged server, and a re-created database all mint
+     * colliding ids into the same machine-global settings file. When a tab
+     * id first appears in the snapshot stream, [reconcilePersistedTabState]
+     * therefore checks whether the persisted state under that id actually
+     * belongs to this tab (shared pane ids) and drops it when it belongs to
+     * a dead namesake — otherwise a brand-new tab inherits a stale
+     * `custom` preset and its first pane never Auto-tiles (termtastic#86).
+     *
+     * @see reconcilePersistedTabState
      */
-    private fun syncControllersWithSnapshot(snapshot: TabListSnapshot): Boolean {
+    private fun syncControllersWithSnapshot(snapshot: TabListSnapshot): Set<String> {
         val previousByTab = lastSnapshot.tabs.associateBy { it.id }
         val knownTabs = snapshot.tabs.map { it.id }.toSet()
         // Drop state for tabs that are gone.
@@ -2741,19 +2918,38 @@ private class ShellState(
             paneOrderByTab = geometryState.paneOrderByTab.filterKeys { it in knownTabs },
             geometryByTab = geometryState.geometryByTab.filterKeys { it in knownTabs },
         )
-        val activeTabId = snapshot.activeTabId
-        var activeMembershipChanged = false
+        val changedTabs = mutableSetOf<String>()
         snapshot.tabs.forEach { tab ->
+            val curr = tab.panes.map { it.id }.toSet()
+            // First time this tab id appears in the snapshot stream:
+            // validate that any persisted state under the id belongs to
+            // THIS tab before trusting it (see the function kdoc).
+            if (previousByTab[tab.id] == null) {
+                reconcilePersistedTabState(tab.id, curr)
+            }
             val ctl = controllerFor(tab.id)
             val prev = previousByTab[tab.id]?.panes?.map { it.id }?.toSet() ?: emptySet()
-            val curr = tab.panes.map { it.id }.toSet()
-            if (tab.id == activeTabId && prev != curr) activeMembershipChanged = true
+            if (prev != curr) changedTabs.add(tab.id)
             // Removals: drop from controller + geometry.
             (prev - curr).forEach { id ->
                 ctl.recordRemove(id)
                 val tabMap = geometryState.geometryByTab[tab.id].orEmpty() - id
                 geometryState = geometryState.copy(
                     geometryByTab = geometryState.geometryByTab + (tab.id to tabMap),
+                )
+            }
+            // Hygiene: drop geometry entries for panes the tab no longer
+            // contains. The `prev - curr` diff above only covers panes this
+            // client saw disappear; entries hydrated from persistence for
+            // panes that died while the client was away (or that belong to
+            // a colliding pane id from another tab lifetime) would
+            // otherwise linger in the persisted blob forever.
+            val tabGeometry = geometryState.geometryByTab[tab.id].orEmpty()
+            val deadGeometry = tabGeometry.keys - curr
+            if (deadGeometry.isNotEmpty()) {
+                geometryState = geometryState.copy(
+                    geometryByTab = geometryState.geometryByTab +
+                        (tab.id to (tabGeometry - deadGeometry)),
                 )
             }
             // Additions: record on controller, and (only when at
@@ -2801,34 +2997,96 @@ private class ShellState(
         }
         persistLayoutState()
         lastSnapshot = snapshot
-        return activeMembershipChanged
+        return changedTabs
     }
 
     /**
-     * `true` when the active tab's preset is [LayoutPreset.Auto] —
-     * the only preset that re-tiles on membership change. Other
-     * presets are applied once at user request and then geometry is
-     * sticky; the snapshot-driven retile path checks this gate so
+     * Decides whether the persisted layout state stored under [tabId]
+     * belongs to the tab that just appeared in the snapshot stream, and
+     * drops it when it demonstrably belongs to a dead tab that happened
+     * to share the id.
+     *
+     * Called by [syncControllersWithSnapshot] exactly once per tab id
+     * per appearance (i.e. when the id is absent from `lastSnapshot`):
+     * at boot for every restored tab, and mid-session when a tab is
+     * created. The test is pane-id overlap: a genuinely restored tab
+     * always shares at least one pane id with what was persisted for it,
+     * while state recorded for a different tab lifetime (another server
+     * database reusing sequential ids, or a long-closed tab whose id got
+     * re-allocated) references only pane ids this tab has never
+     * contained. On a mismatch the tab's persisted preset / pane order /
+     * geometry are dropped and its controller is discarded, so
+     * [controllerFor] re-creates it with the brand-new-tab default
+     * ([LayoutPreset.Auto]) and the pane add path seeds + Auto-tiles it
+     * like any other new tab (termtastic#86 — a stale `custom` entry
+     * under a reused id was gating the Auto re-tile off, leaving the
+     * first pane of a "new" tab as a small floating window).
+     *
+     * Tabs with no persisted pane ids are left untouched: there is no
+     * evidence either way, and the no-entry case already defaults to
+     * Auto via [controllerFor].
+     *
+     * @param tabId the tab id that just appeared in the snapshot stream.
+     * @param currentPaneIds the pane ids the snapshot reports for it.
+     */
+    private fun reconcilePersistedTabState(tabId: String, currentPaneIds: Set<String>) {
+        val persistedPaneIds = geometryState.paneOrderByTab[tabId].orEmpty().toSet() +
+            geometryState.geometryByTab[tabId].orEmpty().keys
+        if (persistedPaneIds.isEmpty()) return
+        if (persistedPaneIds.any { it in currentPaneIds }) return
+        geometryState = geometryState.copy(
+            presetByTab = geometryState.presetByTab - tabId,
+            paneOrderByTab = geometryState.paneOrderByTab - tabId,
+            geometryByTab = geometryState.geometryByTab - tabId,
+        )
+        // Drop the (possibly hydration-pre-seeded) controller so the next
+        // controllerFor() builds a fresh one with the new-tab Auto default.
+        layoutControllers.remove(tabId)
+    }
+
+    /**
+     * `true` when [tabId]'s preset is [LayoutPreset.Auto] — the only
+     * preset that re-tiles on membership change. Other presets are
+     * applied once at user request and then geometry is sticky; the
+     * snapshot-driven retile path checks this gate per changed tab so
      * focus-only and other non-membership snapshots don't move panes.
      *
-     * @return `true` if Auto is active in the active tab; `false` for
-     *   any other preset (including [LayoutPreset.Custom]) or when no
-     *   tab is active.
+     * @param tabId the tab whose controller preset to check.
+     * @return `true` if Auto is active in that tab; `false` for any
+     *   other preset (including [LayoutPreset.Custom]).
      */
-    private fun activePresetIsAuto(): Boolean {
-        val tabId = viewActiveTabId() ?: return false
-        return controllerFor(tabId).activePreset == LayoutPreset.Auto
-    }
+    private fun presetIsAuto(tabId: String): Boolean =
+        controllerFor(tabId).activePreset == LayoutPreset.Auto
 
     /**
-     * Re-applies the active tab's preset to its panes if the preset is
-     * not [LayoutPreset.Custom]. Reads pane ids from the current view,
-     * builds adapter [FloatingPaneSpec]s from [geometryState], runs them
-     * through `controller.applyPresetToPanes`, and writes the laid-out
-     * geometry back. Mode-agnostic.
+     * Re-applies the **active** tab's preset to its panes if the preset
+     * is not [LayoutPreset.Custom]. Thin wrapper over [maybeReapplyPreset]
+     * for the user-gesture call sites (preset pick from the dropdown,
+     * sidebar reorder, minimize/restore) that by definition act on the
+     * tab the user is looking at.
      */
     private fun maybeReapplyPresetForActiveTab() {
         val tabId = viewActiveTabId() ?: return
+        maybeReapplyPreset(tabId)
+    }
+
+    /**
+     * Re-applies [tabId]'s preset to its panes if the preset is not
+     * [LayoutPreset.Custom]. Reads pane ids from the current view,
+     * builds adapter [FloatingPaneSpec]s from [geometryState], runs them
+     * through `controller.applyPresetToPanes`, and writes the laid-out
+     * geometry back. Mode-agnostic.
+     *
+     * Works for background tabs too: geometry lives in [geometryState]
+     * (per tab, persistent), so re-tiling a tab that is not currently
+     * displayed simply updates the geometry the next activation renders.
+     * The snapshot-diff path relies on this to tile the first pane of a
+     * freshly-created tab even when the snapshot carrying it arrives
+     * while another tab is on screen (termtastic#86).
+     *
+     * @param tabId the tab whose panes should be re-laid-out.
+     */
+    private fun maybeReapplyPreset(tabId: String) {
         val ctl = controllerFor(tabId)
         if (ctl.activePreset == LayoutPreset.Custom) return
         val paneIds = viewPanesIn(tabId).map { it.id }

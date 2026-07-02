@@ -29,8 +29,10 @@ import kotlinx.browser.document
 import kotlinx.browser.window
 import org.w3c.dom.HTMLElement
 import org.w3c.dom.events.MouseEvent
-import se.soderbjorn.darkness.web.hotkey.HotkeyRegistry
+import se.soderbjorn.darkness.web.hotkey.HotkeyActionSpec
+import se.soderbjorn.darkness.web.hotkey.HotkeyBindings
 import se.soderbjorn.darkness.web.hotkey.StandardHotkeys
+import se.soderbjorn.darkness.web.hotkey.ToolkitHotkeyIds
 import se.soderbjorn.darkness.web.confirmClosePane
 
 /**
@@ -308,17 +310,27 @@ class LayoutRenderer(
         }
         container.appendChild(paneArea)
         // Register spatial pane navigation hotkeys against this renderer.
-        // Ctrl+Opt+Arrow moves focus to the nearest pane in the pressed
-        // direction (see [focusPaneInDirection]); there is no wrap-around.
-        // [HotkeyRegistry.register]'s replace-on-register semantics mean
-        // that constructing a new LayoutRenderer (e.g. on tab switch)
-        // overwrites the prior binding — there's no per-renderer
-        // unregister cost and no risk of stale renderers handling keys
-        // after a tab change.
-        HotkeyRegistry.register(StandardHotkeys.PreviousPane) { focusPaneInDirection(Direction.LEFT) }
-        HotkeyRegistry.register(StandardHotkeys.NextPane) { focusPaneInDirection(Direction.RIGHT) }
-        HotkeyRegistry.register(StandardHotkeys.FocusPaneUp) { focusPaneInDirection(Direction.UP) }
-        HotkeyRegistry.register(StandardHotkeys.FocusPaneDown) { focusPaneInDirection(Direction.DOWN) }
+        // Ctrl+Opt+Arrow (by default) moves focus to the nearest pane in
+        // the pressed direction (see [focusPaneInDirection]); there is no
+        // wrap-around. Registration goes through [HotkeyBindings] so the
+        // user's custom chords (persisted under
+        // `PersistKeys.HOTKEY_BINDINGS`) override the defaults; re-
+        // registering on each LayoutRenderer construction (e.g. on tab
+        // switch) replaces the handler so the binding always targets the
+        // live renderer — no per-renderer unregister cost and no risk of
+        // stale renderers handling keys after a tab change.
+        HotkeyBindings.registerAction(
+            HotkeyActionSpec(ToolkitHotkeyIds.PANE_FOCUS_LEFT, "Focus pane left", listOf(StandardHotkeys.PreviousPane))
+        ) { focusPaneInDirection(Direction.LEFT) }
+        HotkeyBindings.registerAction(
+            HotkeyActionSpec(ToolkitHotkeyIds.PANE_FOCUS_RIGHT, "Focus pane right", listOf(StandardHotkeys.NextPane))
+        ) { focusPaneInDirection(Direction.RIGHT) }
+        HotkeyBindings.registerAction(
+            HotkeyActionSpec(ToolkitHotkeyIds.PANE_FOCUS_UP, "Focus pane up", listOf(StandardHotkeys.FocusPaneUp))
+        ) { focusPaneInDirection(Direction.UP) }
+        HotkeyBindings.registerAction(
+            HotkeyActionSpec(ToolkitHotkeyIds.PANE_FOCUS_DOWN, "Focus pane down", listOf(StandardHotkeys.FocusPaneDown))
+        ) { focusPaneInDirection(Direction.DOWN) }
     }
 
     /**

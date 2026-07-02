@@ -29,8 +29,11 @@ import org.w3c.dom.HTMLElement
 import org.w3c.dom.HTMLInputElement
 import org.w3c.dom.events.KeyboardEvent
 import se.soderbjorn.darkness.web.escapeHtmlForConfirm
+import se.soderbjorn.darkness.web.hotkey.HotkeyActionSpec
+import se.soderbjorn.darkness.web.hotkey.HotkeyBindings
 import se.soderbjorn.darkness.web.hotkey.HotkeyRegistry
 import se.soderbjorn.darkness.web.hotkey.StandardHotkeys
+import se.soderbjorn.darkness.web.hotkey.ToolkitHotkeyIds
 import se.soderbjorn.darkness.web.hotkey.isElectronPlatform
 import se.soderbjorn.darkness.web.showConfirmDialog
 
@@ -279,8 +282,15 @@ fun renderTabBar(spec: TabBarSpec): HTMLElement {
  * the last.
  */
 private fun installTabNavigationHotkeys(spec: TabBarSpec) {
-    HotkeyRegistry.register(StandardHotkeys.NextTab) { cycleTab(spec, forward = true) }
-    HotkeyRegistry.register(StandardHotkeys.PreviousTab) { cycleTab(spec, forward = false) }
+    // Registered through [HotkeyBindings] (not the raw registry) so the
+    // user's custom chords override the defaults; re-registration on
+    // every render keeps the handler closing over the latest spec.
+    HotkeyBindings.registerAction(
+        HotkeyActionSpec(ToolkitHotkeyIds.TAB_NEXT, "Next tab", listOf(StandardHotkeys.NextTab))
+    ) { cycleTab(spec, forward = true) }
+    HotkeyBindings.registerAction(
+        HotkeyActionSpec(ToolkitHotkeyIds.TAB_PREVIOUS, "Previous tab", listOf(StandardHotkeys.PreviousTab))
+    ) { cycleTab(spec, forward = false) }
     installTabNumberHotkeys(spec)
 }
 
@@ -332,6 +342,10 @@ private fun installTabNumberHotkeys(spec: TabBarSpec) {
         HotkeyRegistry.register(chord) {
             switchToTabByPosition(spec, position)
         }
+        // Not user-configurable (nine chords behind one conceptual
+        // action), but the config dialog must still refuse to hand these
+        // chords to another action.
+        HotkeyBindings.noteFixedChord(chord, "Switch to tab $position")
     }
 }
 
@@ -726,6 +740,11 @@ fun startTabInlineRename(bar: HTMLElement, tabId: String, spec: TabBarSpec) {
  * directly. Used by both the per-tab × button and the overflow menu's
  * "Close" row so confirmation is consistent across entry points.
  *
+ * The dialog uses the standard accent-styled confirm button (not the
+ * `.dt-destructive` variant): closing a tab is a routine action, not a
+ * dangerous one, so it matches the pane-close / quit / theme-delete
+ * confirmations rather than reading as a red warning (termtastic issue #90).
+ *
  * @param tab        the tab to close
  * @param callbacks  the active [TabBarCallbacks]; must have non-null onClose
  */
@@ -741,7 +760,10 @@ internal fun requestTabClose(tab: TabSpec, callbacks: TabBarCallbacks) {
         message = "Are you sure you want to close <strong>" +
             escapeHtmlForConfirm(label) + "</strong>?",
         confirmLabel = "Close",
-        destructive = true,
+        // Deliberately non-destructive: tab close isn't considered a
+        // dangerous action (issue #90 follow-up), so the confirm button
+        // keeps the standard accent styling.
+        destructive = false,
         messageIsHtml = true,
         onConfirm = { onClose(tab.id) },
     )

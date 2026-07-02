@@ -61,6 +61,18 @@ object HotkeyRegistry {
     private var listenerAttached: Boolean = false
 
     /**
+     * While `true`, the registry's window listener ignores every event —
+     * no action fires and no default is prevented.
+     *
+     * Set by the hotkey-config dialog ([openHotkeyConfigDialog]) for its
+     * whole lifetime so (a) recording a chord that happens to match an
+     * existing binding doesn't *run* that binding underneath the modal,
+     * and (b) navigation chords can't rearrange the app while a modal is
+     * up. Always restore to `false` when done.
+     */
+    var suppressed: Boolean = false
+
+    /**
      * Bind [action] to [hotkey]. If a prior binding exists for the same
      * chord, it's replaced; the previous action is dropped.
      *
@@ -97,6 +109,8 @@ object HotkeyRegistry {
         listenerAttached = true
         window.addEventListener("keydown", { ev: Event ->
             val ke = ev as? KeyboardEvent ?: return@addEventListener
+            // Recording mode (hotkey-config dialog): stand down entirely.
+            if (suppressed) return@addEventListener
             // Modifier-only events (the user pressed Ctrl alone, before
             // adding the rest of the chord) shouldn't even be looked up;
             // their `key` is "Control" / "Alt" / etc. and would never

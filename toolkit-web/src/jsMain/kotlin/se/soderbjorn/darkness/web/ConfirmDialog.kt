@@ -29,8 +29,13 @@ import org.w3c.dom.events.KeyboardEvent
  * @param message       body message shown above the buttons
  * @param confirmLabel  label for the primary (confirm) button. Defaults to "OK".
  * @param cancelLabel   label for the secondary (cancel) button. Defaults to "Cancel".
- * @param destructive   if true, styles the confirm button as destructive
- *   (uses `--t-semantic-danger` for the background).
+ * @param destructive   if true, styles the confirm button as destructive.
+ *   The `.dt-destructive` variant paints the label/border with the theme's
+ *   `--t-danger` token over a translucent danger-tinted surface — muted and
+ *   in-theme rather than a solid danger-red fill (termtastic issue #90).
+ *   Reserve this for genuinely dangerous, hard-to-undo actions; routine
+ *   confirmations (tab close, pane close, quit) use the default accent
+ *   styling so they don't read as warnings.
  * @param messageIsHtml if true, [message] is set as `innerHTML` so callers
  *   can include inline markup like `<strong>name</strong>`. When false
  *   (the default), [message] is rendered as plain text via `textContent`.
@@ -182,6 +187,9 @@ fun confirmClosePane(
         // autosaved, a terminal session can be reopened). The default
         // accent-themed confirm button reads as in-theme; the destructive
         // variant looked out-of-place against the rest of the UI.
+        // (The destructive variant has since been re-themed to a muted
+        // danger tint — see `.dt-destructive` in darkness-toolkit.css —
+        // but pane close stays non-destructive by semantics.)
         destructive = false,
         messageIsHtml = true,
         onConfirm = onConfirm,

@@ -111,6 +111,20 @@ object PersistKeys {
      * ids; missing key means every section is open.
      */
     const val SIDEBAR_STATE: String = "darkness.sidebarState"
+
+    /**
+     * Serialized custom hotkey bindings: a JSON object mapping action id
+     * → array of chord specs (e.g. `{"toolkit.pane.focusLeft":
+     * ["ctrl+alt+ArrowLeft"]}`). A present action id fully *replaces* the
+     * action's default chords; a missing id means "use the defaults".
+     *
+     * Written by the toolkit's web shell when the user edits bindings in
+     * the hotkey-config dialog, and read once at mount to apply the
+     * user's overrides. Apps that sync UI settings from a server should
+     * also re-apply this key on live settings pushes (see
+     * `HotkeyBindings.applyCustomBindingsJson` in toolkit-web).
+     */
+    const val HOTKEY_BINDINGS: String = "darkness.hotkeyBindings"
 }
 
 /**
